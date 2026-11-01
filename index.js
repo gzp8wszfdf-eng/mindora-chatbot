@@ -55,7 +55,8 @@ async function askGigaChat(question) {
   );
 
   if (!response.ok) {
-    throw new Error("GigaChat error: " + response.status);
+    const errorText = await response.text();
+throw new Error(`GigaChat error ${response.status}: ${errorText}`);
   }
 
   const data = await response.json();
