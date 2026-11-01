@@ -39,7 +39,7 @@ async function askGigaChat(question) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "GigaChat",
+        model: "GigaChat-2",
         messages: [
           {
             role: "system",
