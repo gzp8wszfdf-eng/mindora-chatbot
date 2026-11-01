@@ -1,0 +1,12 @@
+{
+  "name": "mindora-chatbot",
+  "version": "1.0.0",
+  "description": "Mindora AI Telegram Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
