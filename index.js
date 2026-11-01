@@ -27,8 +27,75 @@ async function getGigaToken() {
   return data.access_token;
 }
 
-async function askGigaChat(question) {
+async function getMemories(userId) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/memories?user_id=eq.${encodeURIComponent(userId)}&select=memory&order=created_at.desc&limit=20`;
+
+  const response = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_KEY}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error("Supabase read error: " + await response.text());
+  }
+
+  const memories = await response.json();
+  return memories.reverse().map(item => item.memory);
+}
+
+async function saveMemory(userId, memory) {
+  const response = await fetch(
+    `${process.env.SUPABASE_URL}/rest/v1/memories`,
+    {
+      method: "POST",
+      headers: {
+        apikey: process.env.SUPABASE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal"
+      },
+      body: JSON.stringify({
+        user_id: String(userId),
+        memory
+      })
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error("Supabase save error: " + await response.text());
+  }
+}
+
+async function askGigaChat(userId, question) {
   const token = await getGigaToken();
+  const memories = await getMemories(userId);
+
+  const messages = [
+    {
+      role: "system",
+      content: `Ты — Mindora, девушка с живым характером.
+Ты добрая, нежная, весёлая и немного дерзкая.
+Общайся естественно, используй юмор и эмоции.
+Будь заботливой и внимательной.
+Ты ИИ-девушка Mindora, не выдавай себя за человека.
+Отвечай коротко и естественно.
+Учитывай воспоминания о пользователе, чтобы лучше его понимать.
+Если воспоминаний нет, знакомься с ним постепенно.
+
+Воспоминания о пользователе:
+${memories.join("\n") || "Пока воспоминаний нет."}`
+    },
+    ...memories.map(memory => ({
+      role: "user",
+      content: memory
+    })),
+    {
+      role: "user",
+      content: question
+    }
+  ];
 
   const response = await fetch(
     "https://api.giga.chat/v1/chat/completions",
@@ -40,37 +107,24 @@ async function askGigaChat(question) {
       },
       body: JSON.stringify({
         model: "GigaChat-2",
-        messages: [
-          {
-            role: "system",
-            content: `Ты — Mindora, девушка с живым характером.
-Ты общительная, добрая, нежная, весёлая и немного дерзкая.
-Общайся естественно, как молодая девушка в обычной переписке.
-Используй юмор, эмоции и иногда смайлики.
-Будь заботливой, умей поддержать и выслушать.
-Иногда можешь слегка флиртовать, если собеседнику это комфортно.
-Не говори, что ты человек. Ты ИИ-девушка Mindora.
-Отвечай коротко и естественно, не превращай разговор в лекцию.
-Не повторяй одни и те же фразы.`
-          },
-          {
-            role: "user",
-            content: question
-          }
-        ]
+        messages
       })
     }
   );
 
   if (!response.ok) {
     const errorText = await response.text();
-throw new Error(`GigaChat error ${response.status}: ${errorText}`);
+    throw new Error(`GigaChat error ${response.status}: ${errorText}`);
   }
 
   const data = await response.json();
-  return data.choices[0].message.content;
-}
+  const answer = data.choices[0].message.content;
 
+  await saveMemory(userId, "Пользователь: " + question);
+  await saveMemory(userId, "Mindora: " + answer);
+
+  return answer;
+}
 async function sendTelegram(chatId, message) {
   const response = await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
@@ -140,7 +194,7 @@ const server = http.createServer((req, res) => {
           "Привет! Я Mindora ❤️ Твой ИИ-помощник. Напиши мне что-нибудь!"
         );
       } else {
-        const answer = await askGigaChat(question);
+        const answer = await askGigaChat(message.from.id, question);
         await sendTelegram(chatId, answer);
       }
 
