@@ -282,6 +282,87 @@ async function describeTelegramPhoto(fileId) {
   return description;
 }
 
+
+const pendingEditPhotos = new Map();
+
+async function downloadTelegramPhoto(fileId) {
+  const tg = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
+  if (!tg.ok) throw new Error('Telegram getFile HTTP ' + tg.status);
+  const tgData = await tg.json();
+  if (!tgData.ok || !tgData.result?.file_path) throw new Error('Telegram did not return photo path');
+  const photoResponse = await fetch(`https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${tgData.result.file_path}`);
+  if (!photoResponse.ok) throw new Error('Telegram photo download HTTP ' + photoResponse.status);
+  const buffer = Buffer.from(await photoResponse.arrayBuffer());
+  if (!buffer.length || buffer.length > 15 * 1024 * 1024) throw new Error('Photo is empty or exceeds 15 MB limit');
+  const path = tgData.result.file_path.toLowerCase();
+  const mime = path.endsWith('.png') ? 'image/png' : path.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+  return { buffer, mime };
+}
+
+async function editImageWithGemini(photo, instruction) {
+  if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured');
+  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+    method: 'POST',
+    headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gemini-nano-banana-2.1',
+      input: [
+        { type: 'image', mime_type: photo.mime, data: photo.buffer.toString('base64') },
+        { type: 'text', text: 'Отредактируй предоставленное изображение строго по просьбе пользователя. Сохрани человека, его личность и остальные детали без изменений, если пользователь не попросил обратного. Запрос: ' + instruction }
+      ],
+      response_format: { type: 'image', mime_type: 'image/jpeg', image_size: '1K' }
+    }),
+    signal: AbortSignal.timeout(120000)
+  });
+  const raw = await response.text();
+  let data = {};
+  try { data = JSON.parse(raw); } catch {}
+  if (!response.ok) {
+    const detail = raw.toLowerCase();
+    if (response.status === 429 || detail.includes('quota') || detail.includes('resource_exhausted') || detail.includes('rate limit')) {
+      const error = new Error('GEMINI_LIMIT');
+      error.code = 'GEMINI_LIMIT';
+      throw error;
+    }
+    throw new Error('Gemini image edit HTTP ' + response.status + ': ' + raw.slice(0, 500));
+  }
+  let imageData = data.output_image?.data;
+  let mime = data.output_image?.mime_type || 'image/jpeg';
+  if (!imageData && Array.isArray(data.steps)) {
+    for (const step of data.steps) {
+      for (const block of (step.content || [])) {
+        if (block.type === 'image' && block.data) { imageData = block.data; mime = block.mime_type || mime; }
+      }
+    }
+  }
+  if (!imageData) throw new Error('Gemini returned no edited image');
+  return { buffer: Buffer.from(imageData, 'base64'), mime };
+}
+
+async function sendTelegramPhoto(chatId, photo, caption) {
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (caption) form.append('caption', caption.slice(0, 1000));
+  form.append('photo', new Blob([photo.buffer], { type: photo.mime }), photo.mime === 'image/png' ? 'mindora-edited.png' : 'mindora-edited.jpg');
+  const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendPhoto`, { method: 'POST', body: form });
+  if (!response.ok) throw new Error('Telegram sendPhoto error: ' + await response.text());
+}
+
+async function handleImageEdit(chatId, userId, photo, instruction) {
+  const cleanInstruction = instruction.replace(/^\\/edit\\s*/i, '').trim();
+  if (!cleanInstruction) { await sendTelegram(chatId, 'Напиши, что изменить на фото. Например: «убери фон» или «сделай волосы темнее» ❤️'); return; }
+  await sendTelegram(chatId, 'Приняла! Редактирую фото ✨ Это может занять до пары минут.');
+  try {
+    const edited = await editImageWithGemini(photo, cleanInstruction);
+    await sendTelegramPhoto(chatId, edited, 'Готово ❤️ Если хочешь, можем внести ещё изменения.');
+    try { await saveMessage(userId, 'user', '[Редактирование фото] ' + cleanInstruction); await saveMessage(userId, 'assistant', '[Отправлено отредактированное фото]'); } catch (e) { console.error('Edit history save error:', e.message); }
+  } catch (error) {
+    console.error('Image editing failed:', error.message);
+    if (error.code === 'GEMINI_LIMIT') await sendTelegram(chatId, 'Сейчас достигнут лимит запросов Gemini или сервис временно ограничил обработку. Попробуй позже. Условия и возможная стоимость зависят от тарифа твоего Google API-аккаунта ❤️');
+    else await sendTelegram(chatId, 'Не получилось отредактировать фото 😔 Сервис мог быть временно недоступен. Попробуй ещё раз чуть позже.');
+  }
+}
+
 function marketplaceTargets(query) {
   const q = encodeURIComponent(query);
   return [
@@ -564,8 +645,18 @@ const server = http.createServer((req, res) => {
           "Очистку истории добавим отдельно ❤️"
         );
       } else if (message.photo?.length) {
-        await sendTelegram(chatId, "Фото получила ❤️ Сейчас попробую распознать товар.");
-        const photo = message.photo[message.photo.length - 1];
+        const photoMeta = message.photo[message.photo.length - 1];
+        const editIntent = /^(\\/edit\\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
+        if (editIntent) {
+          const photo = await downloadTelegramPhoto(photoMeta.file_id);
+          await handleImageEdit(chatId, userId, photo, question);
+          res.writeHead(200); res.end('OK'); return;
+        }
+        await sendTelegram(chatId, 'Фото получила ❤️ Сейчас попробую распознать товар. Чтобы отредактировать его, отправь следом команду /edit и напиши, что изменить.');
+        const photo = photoMeta;
+        let cachedPhoto = null;
+        try { cachedPhoto = await downloadTelegramPhoto(photo.file_id); pendingEditPhotos.set(String(userId), { photo: cachedPhoto, createdAt: Date.now() }); }
+        catch (downloadError) { console.warn('Could not cache photo for editing:', downloadError.message); }
         let description;
         try {
           description = await describeTelegramPhoto(photo.file_id);
@@ -589,6 +680,15 @@ const server = http.createServer((req, res) => {
             console.error("Photo history save error:", error.message);
           }
           await sendTelegram(chatId, fullAnswer);
+        }
+      } else if (question.startsWith('/edit') || pendingEditPhotos.has(String(userId)) && /^(измени|отредактируй|убери|замени|поменяй|улучши|сделай)/i.test(question)) {
+        const pending = pendingEditPhotos.get(String(userId));
+        if (!pending || Date.now() - pending.createdAt > 10 * 60 * 1000) {
+          pendingEditPhotos.delete(String(userId));
+          await sendTelegram(chatId, 'Сначала отправь фото, затем команду /edit и описание изменений ❤️');
+        } else {
+          pendingEditPhotos.delete(String(userId));
+          await handleImageEdit(chatId, userId, pending.photo, question);
         }
       } else if (question.startsWith("/")) {
         await sendTelegram(
