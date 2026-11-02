@@ -506,7 +506,6 @@ const server = http.createServer((req, res) => {
         );
       } else if (message.photo?.length) {
         await sendTelegram(chatId, "Секундочку, рассматриваю фото 🔎");
-        const token = await getGigaToken();
         const photo = message.photo[message.photo.length - 1];
         const description = await describeTelegramPhoto(photo.file_id);
         if (/не товар|человек|животн|пейзаж|не изображен товар/i.test(description)) {
