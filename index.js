@@ -349,7 +349,7 @@ async function sendTelegramPhoto(chatId, photo, caption) {
 }
 
 async function handleImageEdit(chatId, userId, photo, instruction) {
-  const cleanInstruction = instruction.replace(/^\\/edit\\s*/i, '').trim();
+  const cleanInstruction = instruction.replace(/^\/edit\s*/i, '').trim();
   if (!cleanInstruction) { await sendTelegram(chatId, 'Напиши, что изменить на фото. Например: «убери фон» или «сделай волосы темнее» ❤️'); return; }
   await sendTelegram(chatId, 'Приняла! Редактирую фото ✨ Это может занять до пары минут.');
   try {
@@ -646,7 +646,7 @@ const server = http.createServer((req, res) => {
         );
       } else if (message.photo?.length) {
         const photoMeta = message.photo[message.photo.length - 1];
-        const editIntent = /^(\\/edit\\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
+        const editIntent = /^(\/edit\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
         if (editIntent) {
           const photo = await downloadTelegramPhoto(photoMeta.file_id);
           await handleImageEdit(chatId, userId, photo, question);
