@@ -305,30 +305,47 @@ function decodeSearchResultUrl(href) {
 
 async function searchMarketplaceWeb(query, target) {
   const searchQuery = "site:" + target.domain + " " + query;
-  const url = "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(searchQuery);
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; MindoraBot/1.0)",
-      "Accept": "text/html"
-    },
-    signal: AbortSignal.timeout(10000)
-  });
-  if (!response.ok) throw new Error("Search HTTP " + response.status);
-  const html = await response.text();
-  const anchors = [...html.matchAll(/<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
-  const found = [];
-  for (const match of anchors) {
-    const link = decodeSearchResultUrl(match[1]);
-    const title = match[2].replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+  const engines = [
+    "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(searchQuery),
+    "https://www.bing.com/search?q=" + encodeURIComponent(searchQuery)
+  ];
+  for (const url of engines) {
     try {
-      const parsed = new URL(link);
-      if (parsed.hostname === target.domain || parsed.hostname.endsWith("." + target.domain)) {
-        if (title && !found.some(item => item.url === link)) found.push({ title, url: link });
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml"
+        },
+        signal: AbortSignal.timeout(12000)
+      });
+      if (!response.ok) continue;
+      const html = await response.text();
+      const anchors = [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)];
+      const found = [];
+      for (const match of anchors) {
+        const attrs = match[1];
+        const classMatch = attrs.match(/\bclass=["']([^"']+)["']/i);
+        const hrefMatch = attrs.match(/\bhref=["']([^"']+)["']/i);
+        if (!hrefMatch) continue;
+        const classes = classMatch?.[1] || "";
+        if (!/(result__a|b_algo|tilk|result)/i.test(classes)) continue;
+        let link = decodeSearchResultUrl(hrefMatch[1].replace(/&amp;/g, "&"));
+        const title = match[2].replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+        try {
+          const parsed = new URL(link);
+          if ((parsed.hostname === target.domain || parsed.hostname.endsWith("." + target.domain)) &&
+              title && !found.some(item => item.url === link)) {
+            found.push({ title, url: link });
+          }
+        } catch {}
+        if (found.length >= 3) break;
       }
-    } catch {}
-    if (found.length >= 3) break;
+      if (found.length) return found;
+    } catch (error) {
+      console.warn("Web search engine failed:", error.message);
+    }
   }
-  return found;
+  return [];
 }
 
 async function searchMarketplaces(question) {
