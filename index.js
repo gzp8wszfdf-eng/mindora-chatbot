@@ -330,7 +330,7 @@ async function audioToOggOpus(audio) {
       resolve(output);
     });
     ffmpeg.stdin.on("error", reject);
-    ffmpeg.stdin.end(wav);
+    ffmpeg.stdin.end(audio);
   });
 }
 
