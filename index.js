@@ -928,6 +928,83 @@ async function askGigaChat(userId, question) {
   return answer;
 }
 
+async function sendTelegramAudio(chatId, track) {
+  if (!track.previewUrl) return false;
+  const previewResponse = await fetch(track.previewUrl, {
+    headers: { "User-Agent": "Mindora Telegram Bot/1.0" },
+    signal: AbortSignal.timeout(20000)
+  });
+  if (!previewResponse.ok) throw new Error("Music preview HTTP " + previewResponse.status);
+  const audio = Buffer.from(await previewResponse.arrayBuffer());
+  if (!audio.length || audio.length > 12 * 1024 * 1024) throw new Error("Music preview is empty or too large");
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("audio", new Blob([audio], { type: "audio/mp4" }), "preview.m4a");
+  form.append("title", String(track.trackName || "Music preview").slice(0, 64));
+  form.append("performer", String(track.artistName || "").slice(0, 64));
+  form.append("caption", "🎵 " + cleanSearchText(track.trackName) + " — " + cleanSearchText(track.artistName) +
+    "\\nЭто ознакомительный фрагмент. Полная версия: " + track.trackViewUrl);
+  const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendAudio`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!response.ok) throw new Error("Telegram sendAudio error: " + await response.text());
+  return true;
+}
+
+async function searchAndSendSongs(chatId, question) {
+  const query = extractSongQuery(question);
+  if (!query || query.length < 2) {
+    await sendTelegram(chatId, "Напиши название песни или исполнителя — найду нужный трек ❤️");
+    return "Пустой запрос на поиск песни";
+  }
+
+  let tracks = [];
+  for (const country of ["ru", "de", "us"]) {
+    try {
+      const url = "https://itunes.apple.com/search?term=" + encodeURIComponent(query) +
+        "&entity=song&limit=5&country=" + country;
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(12000)
+      });
+      if (!response.ok) continue;
+      const data = await response.json();
+      tracks = (data.results || []).filter(track => track.trackName && track.artistName && track.trackViewUrl).slice(0, 5);
+      if (tracks.length) break;
+    } catch (error) {
+      console.warn("Song catalog search failed (" + country + "):", error.message);
+    }
+  }
+
+  if (!tracks.length) {
+    const answer = "Не нашла этот трек в музыкальном каталоге 😔 Попробуй написать точнее — название и исполнителя.";
+    await sendTelegram(chatId, answer);
+    return answer;
+  }
+
+  await sendTelegram(chatId, "🎵 Нашла по запросу «" + query + "». Отправляю доступные фрагменты прямо сюда:");
+  let sent = 0;
+  const links = [];
+  for (const track of tracks.slice(0, 3)) {
+    try {
+      if (await sendTelegramAudio(chatId, track)) sent++;
+      else links.push(cleanSearchText(track.trackName) + " — " + cleanSearchText(track.artistName) + "\\nПолная версия: " + track.trackViewUrl);
+    } catch (error) {
+      console.warn("Could not send song preview:", error.message);
+      links.push(cleanSearchText(track.trackName) + " — " + cleanSearchText(track.artistName) + "\\nПолная версия: " + track.trackViewUrl);
+    }
+  }
+
+  const note = (sent ? "Отправила " + sent + " ознакомительных фрагмента прямо в чат.\\n\\n" : "") +
+    (links.length ? "Для этих вариантов фрагмент недоступен, но вот ссылки:\\n" + links.join("\\n\\n") + "\\n\\n" : "") +
+    "Полные версии открываются в музыкальном сервисе по ссылкам под аудио. Полные коммерческие файлы можно пересылать только с разрешения правообладателя ❤️";
+  await sendTelegram(chatId, note);
+  return "Поиск песни: " + query + ". Отправлено фрагментов: " + sent + ".";
+}
+
 async function sendTelegram(chatId, message) {
   const response = await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
@@ -1078,14 +1155,13 @@ const server = http.createServer((req, res) => {
             "Пока доступны команды /start и /reset ❤️"
           );
         } else if (isFullSongRequest(question)) {
-          const answer = await searchFullSongs(question);
+          const answer = await searchAndSendSongs(chatId, question);
           try {
             await saveMessage(userId, "user", question);
             await saveMessage(userId, "assistant", answer);
           } catch (error) {
             console.error("Song search history save error:", error.message);
           }
-          await sendTelegram(chatId, answer);
         } else if (isMediaSearch(question)) {
           const answer = await searchMediaAndWeb(question);
           try {
