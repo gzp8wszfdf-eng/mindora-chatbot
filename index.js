@@ -293,8 +293,33 @@ async function createVoiceReply(answer) {
   return Buffer.from(encoded, "base64");
 }
 
-function wavToMp3(wav) {
-  const lamejs = require("@breezystack/lamejs");
+async function wavToOggOpus(wav) {
+  const { spawn } = require("child_process");
+  const ffmpegPath = require("ffmpeg-static");
+  if (!ffmpegPath) throw new Error("FFmpeg binary is unavailable");
+
+  return await new Promise((resolve, reject) => {
+    const ffmpeg = spawn(ffmpegPath, [
+      "-hide_banner", "-loglevel", "error",
+      "-f", "wav", "-i", "pipe:0",
+      "-vn", "-c:a", "libopus", "-b:a", "32k",
+      "-application", "voip", "-f", "ogg", "pipe:1"
+    ]);
+    const chunks = [];
+    let errorText = "";
+    ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
+    ffmpeg.stderr.on("data", chunk => { errorText += chunk.toString(); });
+    ffmpeg.on("error", reject);
+    ffmpeg.on("close", code => {
+      if (code !== 0) return reject(new Error("FFmpeg conversion failed: " + errorText.slice(0, 500)));
+      const output = Buffer.concat(chunks);
+      if (!output.length) return reject(new Error("FFmpeg returned empty OGG audio"));
+      resolve(output);
+    });
+    ffmpeg.stdin.on("error", reject);
+    ffmpeg.stdin.end(wav);
+  });
+}
   if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") {
     throw new Error("TTS returned an unsupported WAV file");
   }
@@ -349,7 +374,7 @@ async function answerVoiceMessage(chatId, userId, fileId) {
   }
   const answer = await askGigaChat(userId, transcript);
   try {
-    await sendTelegramVoice(chatId, wavToMp3(await createVoiceReply(answer)));
+    await sendTelegramVoice(chatId, await wavToOggOpus(await createVoiceReply(answer)));
   } catch (error) {
     console.error("Voice generation failed; sending text fallback:", error.message);
     await sendTelegram(chatId, answer);
