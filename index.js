@@ -1123,6 +1123,56 @@ async function sendTelegram(chatId, message) {
   }
 }
 
+
+const superpowerGames = new Map();
+
+function isSuperpowerGameStart(question) {
+  return /^(давай\s+)?(поиграем|сыграем)\s+в\s+суперспособност(ь|и)\s*[!.?]*$/i.test(question.trim()) ||
+    /^суперспособност(ь|и)\s*[!.?]*$/i.test(question.trim());
+}
+
+function isSuperpowerGameStop(question) {
+  return /^(стоп|закончим игру|хватит играть|выход из игры|закончить игру)[!.?]*$/i.test(question.trim());
+}
+
+async function handleSuperpowerGame(chatId, userId, question) {
+  const key = String(chatId);
+  const phase = superpowerGames.get(key);
+
+  if (isSuperpowerGameStart(question) || !phase) {
+    superpowerGames.set(key, "waiting_for_my_flaw");
+    const answer = await askGigaChat(
+      userId,
+      "Начни с человеком игру «Суперспособность и изъян». Придумай ОДНУ яркую, необычную, интересную суперспособность для себя (Миндоры), но НЕ придумывай к ней изъян. Напиши коротко и закончи вопросом: «Какой у этой способности изъян?» Не объясняй правила заново, не добавляй списки."
+    );
+    await sendTelegram(chatId, answer);
+    return;
+  }
+
+  if (phase === "waiting_for_my_flaw") {
+    superpowerGames.set(key, "waiting_for_user_power");
+    const answer = await askGigaChat(
+      userId,
+      "Мы играем в «Суперспособность и изъян». Человек придумал изъян для моей суперспособности: «" +
+      question.slice(0, 700) +
+      "». Коротко и с юмором отреагируй на его вариант, затем попроси человека придумать СВОЮ суперспособность — изъян к ней придумаешь ты. Пока не придумывай изъян и не выдавай новую способность."
+    );
+    await sendTelegram(chatId, answer);
+    return;
+  }
+
+  if (phase === "waiting_for_user_power") {
+    superpowerGames.set(key, "waiting_for_my_flaw");
+    const answer = await askGigaChat(
+      userId,
+      "Мы играем в «Суперспособность и изъян». Человек придумал такую суперспособность: «" +
+      question.slice(0, 700) +
+      "». Придумай к ней один смешной, неожиданный, но логичный изъян. Затем сразу придумай ОДНУ новую суперспособность для Миндоры, не раскрывая её изъян, и спроси человека, какой у неё изъян. Ответ короткий, живой, без списков."
+    );
+    await sendTelegram(chatId, answer);
+  }
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/") {
     res.writeHead(200);
@@ -1246,6 +1296,13 @@ const server = http.createServer((req, res) => {
             pendingEditPhotos.delete(String(userId));
             await handleImageEdit(chatId, userId, pending.photo, question);
           }
+        } else if (isSuperpowerGameStop(question) && superpowerGames.has(String(chatId))) {
+          superpowerGames.delete(String(chatId));
+          await sendTelegram(chatId, "Игра остановлена 😄 Захочешь продолжить — напиши «Давай поиграем в суперспособность».");
+        } else if (isSuperpowerGameStart(question)) {
+          await handleSuperpowerGame(chatId, userId, question);
+        } else if (superpowerGames.has(String(chatId))) {
+          await handleSuperpowerGame(chatId, userId, question);
         } else if (question.startsWith("/")) {
           await sendTelegram(
             chatId,
