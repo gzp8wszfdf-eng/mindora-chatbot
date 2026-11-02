@@ -235,30 +235,47 @@ async function describeTelegramPhoto(fileId) {
   const mime = filePath.endsWith(".png") ? "image/png" :
     filePath.endsWith(".webp") ? "image/webp" : "image/jpeg";
 
-  const vision = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
-    method: "POST",
-    headers: {
-      "x-goog-api-key": process.env.GEMINI_API_KEY,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gemini-3.8-flash",
-      input: [
-        {
-          type: "text",
-          text: "Определи товар на фото для поиска в интернет-магазине Wildberries. Верни только короткий поисковый запрос: тип товара, бренд и модель, если их можно уверенно прочитать. Не выдумывай бренд или модель. Если это не товар, кратко опиши, что изображено."
-        },
-        {
-          type: "image",
-          data: photoBuffer.toString("base64"),
-          mime_type: mime
-        }
-      ]
-    }),
-    signal: AbortSignal.timeout(60000)
+  const visionPayload = JSON.stringify({
+    model: "gemini-3.8-flash",
+    input: [
+      {
+        type: "text",
+        text: "Определи товар на фото для поиска в интернет-магазине Wildberries. Верни только короткий поисковый запрос: тип товара, бренд и модель, если их можно уверенно прочитать. Не выдумывай бренд или модель. Если это не товар, кратко опиши, что изображено."
+      },
+      {
+        type: "image",
+        data: photoBuffer.toString("base64"),
+        mime_type: mime
+      }
+    ]
   });
 
-  if (!vision.ok) throw new Error("Gemini vision " + vision.status + ": " + await vision.text());
+  let vision;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      vision = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+        method: "POST",
+        headers: {
+          "x-goog-api-key": process.env.GEMINI_API_KEY,
+          "Content-Type": "application/json"
+        },
+        body: visionPayload,
+        signal: AbortSignal.timeout(90000)
+      });
+      if (vision.ok) break;
+      const errorText = await vision.text();
+      if (![429, 500, 502, 503, 504].includes(vision.status) || attempt === 3) {
+        throw new Error("Gemini vision " + vision.status + ": " + errorText);
+      }
+      console.warn("Gemini temporarily unavailable; retry", attempt, vision.status);
+    } catch (error) {
+      if (attempt === 3 || !/TimeoutError|fetch failed|temporarily unavailable/i.test(String(error))) throw error;
+      console.warn("Gemini request failed; retry", attempt, error.message);
+    }
+    await new Promise(resolve => setTimeout(resolve, attempt * 2500));
+  }
+
+  if (!vision?.ok) throw new Error("Gemini vision failed after retries");
   const visionData = await vision.json();
   const description = (visionData.output_text || "").trim();
   if (!description) throw new Error("Gemini vision returned empty description");
