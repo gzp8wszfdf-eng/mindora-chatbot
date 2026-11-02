@@ -377,6 +377,51 @@ async function describeTelegramPhoto(fileId) {
   const mime = filePath.endsWith(".png") ? "image/png" :
     filePath.endsWith(".webp") ? "image/webp" : "image/jpeg";
 
+  // Prefer Groq vision to avoid Gemini's low daily free-tier quota.
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + process.env.GROQ_API_KEY,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "qwen/qwen3.8-27b",
+          messages: [{
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Ты распознаёшь товар для точного поиска на Wildberries. Внимательно изучи фото и надписи на упаковке. Верни одну конкретную поисковую фразу на русском, без пояснений. Укажи тип товара, бренд и модель/линейку только если они отчётливо видны. Если бренд не читается, не выдумывай его — используй тип товара и видимые характеристики. Если товар определить нельзя или на фото не товар, кратко опиши, что изображено."
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: "data:" + mime + ";base64," + photoBuffer.toString("base64")
+                }
+              }
+            ]
+          }],
+          temperature: 0.2,
+          max_tokens: 400
+        }),
+        signal: AbortSignal.timeout(40000)
+      });
+      const groqRaw = await groqResponse.text();
+      if (!groqResponse.ok) {
+        throw new Error("Groq vision HTTP " + groqResponse.status + ": " + groqRaw.slice(0, 500));
+      }
+      const groqData = JSON.parse(groqRaw);
+      const groqDescription = (groqData.choices?.[0]?.message?.content || "").trim();
+      if (!groqDescription) throw new Error("Groq vision returned empty description");
+      console.log("Photo recognized with Groq vision");
+      return groqDescription;
+    } catch (groqError) {
+      console.warn("Groq vision unavailable; trying Gemini fallback:", groqError.message);
+    }
+  }
+
   const visionPayload = JSON.stringify({
     model: "gemini-3.8-flash",
     input: [
