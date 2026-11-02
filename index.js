@@ -810,7 +810,9 @@ const server = http.createServer((req, res) => {
           chatId,
           "Очистку истории добавим отдельно ❤️"
         );
-      } else if (message.voice || message.audio) {\n        await answerVoiceMessage(chatId, userId, (message.voice || message.audio).file_id);\n      } else if (message.photo?.length) {
+      } else if (message.voice || message.audio) {
+        await answerVoiceMessage(chatId, userId, (message.voice || message.audio).file_id);
+      } else if (message.photo?.length) {
         const photoMeta = message.photo[message.photo.length - 1];
         const editIntent = /^(\/edit\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
         if (editIntent) {
