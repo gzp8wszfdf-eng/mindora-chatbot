@@ -944,7 +944,7 @@ async function sendTelegramAudio(chatId, track) {
   form.append("title", String(track.trackName || "Music preview").slice(0, 64));
   form.append("performer", String(track.artistName || "").slice(0, 64));
   form.append("caption", "🎵 " + cleanSearchText(track.trackName) + " — " + cleanSearchText(track.artistName) +
-    "\\nЭто ознакомительный фрагмент. Полная версия: " + track.trackViewUrl);
+    "\nЭто ознакомительный фрагмент. Полная версия: " + track.trackViewUrl);
   const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendAudio`, {
     method: "POST",
     body: form,
@@ -991,15 +991,15 @@ async function searchAndSendSongs(chatId, question) {
   for (const track of tracks.slice(0, 3)) {
     try {
       if (await sendTelegramAudio(chatId, track)) sent++;
-      else links.push(cleanSearchText(track.trackName) + " — " + cleanSearchText(track.artistName) + "\\nПолная версия: " + track.trackViewUrl);
+      else links.push(cleanSearchText(track.trackName) + " — " + cleanSearchText(track.artistName) + "\nПолная версия: " + track.trackViewUrl);
     } catch (error) {
       console.warn("Could not send song preview:", error.message);
-      links.push(cleanSearchText(track.trackName) + " — " + cleanSearchText(track.artistName) + "\\nПолная версия: " + track.trackViewUrl);
+      links.push(cleanSearchText(track.trackName) + " — " + cleanSearchText(track.artistName) + "\nПолная версия: " + track.trackViewUrl);
     }
   }
 
-  const note = (sent ? "Отправила " + sent + " ознакомительных фрагмента прямо в чат.\\n\\n" : "") +
-    (links.length ? "Для этих вариантов фрагмент недоступен, но вот ссылки:\\n" + links.join("\\n\\n") + "\\n\\n" : "") +
+  const note = (sent ? "Отправила " + sent + " ознакомительных фрагмента прямо в чат.\n\n" : "") +
+    (links.length ? "Для этих вариантов фрагмент недоступен, но вот ссылки:\n" + links.join("\n\n") + "\n\n" : "") +
     "Полные версии открываются в музыкальном сервисе по ссылкам под аудио. Полные коммерческие файлы можно пересылать только с разрешения правообладателя ❤️";
   await sendTelegram(chatId, note);
   return "Поиск песни: " + query + ". Отправлено фрагментов: " + sent + ".";
