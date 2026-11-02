@@ -505,14 +505,16 @@ function getVideoEditOptions(instruction) {
   const trim = q.match(/(?:первые|начало|обрежь\s+до)\s*(\d{1,3})\s*(?:секунд|сек|с\b)/i);
   if (seconds) args.push("-t", String(Math.min(180, Math.max(1, Number(seconds[1])))));
   else if (trim) args.push("-t", String(Math.min(180, Math.max(1, Number(trim[1])))));
+  let videoFilter;
   if (/вертикал|сторис|рилс|reels|shorts|тик.?ток/i.test(q)) {
-    args.push("-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,setsar=1");
+    videoFilter = "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,setsar=1";
   } else if (/квадрат/i.test(q)) {
-    args.push("-vf", "scale=720:720:force_original_aspect_ratio=increase,crop=720:720,fps=30,setsar=1");
+    videoFilter = "scale=720:720:force_original_aspect_ratio=increase,crop=720:720,fps=30,setsar=1";
   } else {
-    args.push("-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,setsar=1");
+    videoFilter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,setsar=1";
   }
-  if (/ускор|быстрее|скорост/.test(q)) args.push("-filter:v", "setpts=0.5*PTS");
+  if (/ускор|быстрее|скорост/.test(q)) videoFilter += ",setpts=0.5*PTS";
+  args.push("-vf", videoFilter);
   if (/без звука|убери звук|выключи звук|без аудио/.test(q)) args.push("-an");
   else args.push("-c:a", "aac", "-b:a", "128k");
   return args;
