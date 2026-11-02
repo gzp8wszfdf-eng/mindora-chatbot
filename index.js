@@ -835,7 +835,7 @@ const server = http.createServer((req, res) => {
           await answerVoiceMessage(chatId, userId, (message.voice || message.audio).file_id);
         } else if (message.photo?.length) {
           const photoMeta = message.photo[message.photo.length - 1];
-          const editIntent = /^(\\/edit\\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
+          const editIntent = /^(\/edit\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
           if (editIntent) {
             const photo = await downloadTelegramPhoto(photoMeta.file_id);
             await handleImageEdit(chatId, userId, photo, question);
