@@ -1210,7 +1210,11 @@ const server = http.createServer((req, res) => {
           const answer = await identifySongByLyrics(chatId, question);
           try {
             await saveMessage(userId, "user", question);
-            await saveMessage(userId, "assistant", answer);\n          } catch (error) {\n            console.error("Lyric search history save error:", error.message);\n          }\n        } else if (isFullSongRequest(question)) {
+            await saveMessage(userId, "assistant", answer);
+          } catch (error) {
+            console.error("Lyric search history save error:", error.message);
+          }
+        } else if (isFullSongRequest(question)) {
           const answer = await searchAndSendSongs(chatId, question);
           try {
             await saveMessage(userId, "user", question);
