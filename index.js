@@ -215,6 +215,54 @@ function extractMarketplaceQuery(question) {
     .trim();
 }
 
+
+async function describeTelegramPhoto(fileId, token) {
+  const tg = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
+  if (!tg.ok) throw new Error("Telegram getFile HTTP " + tg.status);
+  const tgData = await tg.json();
+  if (!tgData.ok || !tgData.result?.file_path) throw new Error("Telegram did not return photo path");
+
+  const photoResponse = await fetch(`https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${tgData.result.file_path}`);
+  if (!photoResponse.ok) throw new Error("Telegram photo download HTTP " + photoResponse.status);
+  const photoBuffer = Buffer.from(await photoResponse.arrayBuffer());
+  if (photoBuffer.length > 15 * 1024 * 1024) throw new Error("Photo exceeds GigaChat 15 MB limit");
+
+  const form = new FormData();
+  const mime = tgData.result.file_path.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+  form.append("file", new Blob([photoBuffer], { type: mime }), "telegram-photo" + (mime === "image/png" ? ".png" : ".jpg"));
+  form.append("purpose", "general");
+
+  const upload = await fetch("https://api.giga.chat/v1/files", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form
+  });
+  if (!upload.ok) throw new Error("GigaChat file upload " + upload.status + ": " + await upload.text());
+  const uploaded = await upload.json();
+
+  const vision = await fetch("https://api.giga.chat/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "GigaChat-Pro",
+      messages: [{
+        role: "user",
+        content: "Определи товар на фото для поиска в интернет-магазинах. Верни только короткий поисковый запрос: тип товара, бренд и модель если их можно уверенно прочитать. Не выдумывай бренд или модель. Если это не товар, кратко скажи, что изображено.",
+        attachments: [uploaded.id]
+      }],
+      temperature: 0.1
+    })
+  });
+  if (!vision.ok) throw new Error("GigaChat vision " + vision.status + ": " + await vision.text());
+  const visionData = await vision.json();
+  const description = visionData.choices?.[0]?.message?.content?.trim();
+  if (!description) throw new Error("GigaChat vision returned empty description");
+  return description;
+}
+
 async function searchWildberries(question) {
   const query = extractMarketplaceQuery(question);
   if (!query || query.length < 2) {
@@ -434,7 +482,7 @@ const server = http.createServer((req, res) => {
       const update = JSON.parse(body);
       const message = update.message;
 
-      if (!message?.text || !message.chat?.id) {
+      if ((!message?.text && !message?.photo?.length) || !message.chat?.id) {
         res.writeHead(200);
         res.end("OK");
         return;
@@ -442,7 +490,7 @@ const server = http.createServer((req, res) => {
 
       const chatId = message.chat.id;
       const userId = message.from?.id || chatId;
-      const question = message.text.trim();
+      const question = (message.text || message.caption || "").trim();
 
       if (question === "/start") {
         await sendTelegram(
@@ -454,6 +502,24 @@ const server = http.createServer((req, res) => {
           chatId,
           "Очистку истории добавим отдельно ❤️"
         );
+      } else if (message.photo?.length) {
+        await sendTelegram(chatId, "Секундочку, рассматриваю фото 🔎");
+        const token = await getGigaToken();
+        const photo = message.photo[message.photo.length - 1];
+        const description = await describeTelegramPhoto(photo.file_id, token);
+        if (/не товар|человек|животн|пейзаж|не изображен товар/i.test(description)) {
+          await sendTelegram(chatId, "На фото вижу: " + description + ". Пришли фото самого товара, и я попробую найти его ❤️");
+        } else {
+          const answer = await searchWildberries(description);
+          const fullAnswer = "На фото похоже на: " + description + "\\n\\n" + answer;
+          try {
+            await saveMessage(userId, "user", "[Фото товара] " + description);
+            await saveMessage(userId, "assistant", fullAnswer);
+          } catch (error) {
+            console.error("Photo history save error:", error.message);
+          }
+          await sendTelegram(chatId, fullAnswer);
+        }
       } else if (question.startsWith("/")) {
         await sendTelegram(
           chatId,
