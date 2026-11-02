@@ -666,7 +666,7 @@ const server = http.createServer((req, res) => {
       const update = JSON.parse(body);
       const message = update.message;
 
-      if ((!message?.text && !message?.photo?.length) || !message.chat?.id) {
+      if ((!message?.text && !message?.photo?.length && !message?.voice && !message?.audio) || !message.chat?.id) {
         res.writeHead(200);
         res.end("OK");
         return;
