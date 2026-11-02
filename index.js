@@ -486,6 +486,80 @@ async function downloadTelegramPhoto(fileId) {
   return { buffer, mime };
 }
 
+async function downloadTelegramVideo(fileId) {
+  const tg = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
+  if (!tg.ok) throw new Error("Telegram getFile HTTP " + tg.status);
+  const tgData = await tg.json();
+  if (!tgData.ok || !tgData.result?.file_path) throw new Error("Telegram did not return video path");
+  const response = await fetch(`https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${tgData.result.file_path}`);
+  if (!response.ok) throw new Error("Telegram video download HTTP " + response.status);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length || buffer.length > 20 * 1024 * 1024) throw new Error("Video is empty or exceeds Telegram's 20 MB download limit");
+  return buffer;
+}
+
+function getVideoEditOptions(instruction) {
+  const q = String(instruction || "").toLowerCase();
+  const args = [];
+  const seconds = q.match(/(?:до|на|длительност[ьи]\s*|оставь\s*)(\d{1,3})\s*(?:секунд|сек|с\b)/i);
+  const trim = q.match(/(?:первые|начало|обрежь\s+до)\s*(\d{1,3})\s*(?:секунд|сек|с\b)/i);
+  if (seconds) args.push("-t", String(Math.min(180, Math.max(1, Number(seconds[1])))));
+  else if (trim) args.push("-t", String(Math.min(180, Math.max(1, Number(trim[1])))));
+  if (/вертикал|сторис|рилс|reels|shorts|тик.?ток/i.test(q)) {
+    args.push("-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,setsar=1");
+  } else if (/квадрат/i.test(q)) {
+    args.push("-vf", "scale=720:720:force_original_aspect_ratio=increase,crop=720:720,fps=30,setsar=1");
+  } else {
+    args.push("-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,setsar=1");
+  }
+  if (/ускор|быстрее|скорост/.test(q)) args.push("-filter:v", "setpts=0.5*PTS");
+  if (/без звука|убери звук|выключи звук|без аудио/.test(q)) args.push("-an");
+  else args.push("-c:a", "aac", "-b:a", "128k");
+  return args;
+}
+
+async function editTelegramVideo(chatId, fileId, instruction) {
+  const { spawn } = require("child_process");
+  const ffmpegPath = require("ffmpeg-static");
+  if (!ffmpegPath) throw new Error("FFmpeg binary is unavailable");
+  const input = await downloadTelegramVideo(fileId);
+  const editArgs = getVideoEditOptions(instruction);
+  await sendTelegram(chatId, "🎬 Получила видео! Обрабатываю монтаж…");
+  const output = await new Promise((resolve, reject) => {
+    const ffmpeg = spawn(ffmpegPath, [
+      "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
+      ...editArgs,
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+      "-pix_fmt", "yuv420p", "-movflags", "frag_keyframe+empty_moov",
+      "-f", "mp4", "pipe:1"
+    ]);
+    const chunks = [];
+    let errorText = "";
+    const timeout = setTimeout(() => { ffmpeg.kill("SIGKILL"); reject(new Error("Video editing timed out")); }, 120000);
+    ffmpeg.stdout.on("data", chunk => chunks.push(chunk));
+    ffmpeg.stderr.on("data", chunk => { errorText += chunk.toString(); });
+    ffmpeg.on("error", error => { clearTimeout(timeout); reject(error); });
+    ffmpeg.on("close", code => {
+      clearTimeout(timeout);
+      if (code !== 0) return reject(new Error("FFmpeg video edit failed: " + errorText.slice(0, 700)));
+      const result = Buffer.concat(chunks);
+      if (!result.length || result.length > 45 * 1024 * 1024) return reject(new Error("Edited video is empty or exceeds 45 MB"));
+      resolve(result);
+    });
+    ffmpeg.stdin.on("error", error => { if (error.code !== "EPIPE") { clearTimeout(timeout); reject(error); } });
+    ffmpeg.stdin.end(input);
+  });
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("video", new Blob([output], { type: "video/mp4" }), "mindora_edit.mp4");
+  form.append("caption", "Готово! 🎬❤️");
+  const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendVideo`, {
+    method: "POST", body: form, signal: AbortSignal.timeout(60000)
+  });
+  if (!response.ok) throw new Error("Telegram sendVideo HTTP " + response.status + ": " + (await response.text()).slice(0, 500));
+  return true;
+}
+
 async function editImageWithGemini(photo, instruction) {
   if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured');
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
@@ -1430,7 +1504,7 @@ const server = http.createServer((req, res) => {
     }
 
     const message = update.message;
-    if ((!message?.text && !message?.photo?.length && !message?.voice && !message?.audio) || !message.chat?.id) {
+    if ((!message?.text && !message?.photo?.length && !message?.video && !message?.voice && !message?.audio) || !message.chat?.id) {
       res.writeHead(200);
       res.end("OK");
       return;
@@ -1457,6 +1531,13 @@ const server = http.createServer((req, res) => {
             chatId,
             "Очистку истории добавим отдельно ❤️"
           );
+        } else if (message.video) {
+          try {
+            await editTelegramVideo(chatId, message.video.file_id, question || "Улучши качество и подготовь видео к публикации");
+          } catch (videoError) {
+            console.error("Video editing failed:", videoError.message);
+            await sendTelegram(chatId, "Не получилось обработать видео 😔 Попробуй отправить ролик до 20 МБ. Можно написать к нему: «сделай вертикальным», «обрежь до 15 секунд» или «убери звук».");
+          }
         } else if (message.voice || message.audio) {
           await answerVoiceMessage(chatId, userId, (message.voice || message.audio).file_id);
         } else if (message.photo?.length) {
