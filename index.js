@@ -219,6 +219,130 @@ function extractMarketplaceQuery(question) {
 }
 
 
+
+async function getTelegramAudio(fileId) {
+  const infoResponse = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
+  if (!infoResponse.ok) throw new Error("Telegram getFile HTTP " + infoResponse.status);
+  const info = await infoResponse.json();
+  if (!info.ok || !info.result?.file_path) throw new Error("Telegram audio path is missing");
+  const path = info.result.file_path;
+  const fileResponse = await fetch(`https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${path}`);
+  if (!fileResponse.ok) throw new Error("Telegram audio download HTTP " + fileResponse.status);
+  const buffer = Buffer.from(await fileResponse.arrayBuffer());
+  if (!buffer.length || buffer.length > 20 * 1024 * 1024) throw new Error("Audio is empty or too large");
+  const mime = /\.mp3$/i.test(path) ? "audio/mpeg" : /\.m4a$/i.test(path) ? "audio/mp4" : "audio/ogg";
+  return { buffer, mime };
+}
+
+async function transcribeVoice(audio) {
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
+    method: "POST",
+    headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [
+        { text: "Расшифруй голосовое сообщение на русском языке. Верни только слова пользователя, без пояснений." },
+        { inlineData: { mimeType: audio.mime, data: audio.buffer.toString("base64") } }
+      ] }],
+      generationConfig: { temperature: 0 }
+    }),
+    signal: AbortSignal.timeout(45000)
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error("Gemini transcription HTTP " + response.status + ": " + raw.slice(0, 400));
+  const data = JSON.parse(raw);
+  return (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
+}
+
+async function createVoiceReply(answer) {
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent", {
+    method: "POST",
+    headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{
+        text: String(answer).slice(0, 2500),
+        speech_metadata: { style: "Тёплая, живая, дружелюбная женская речь на русском языке, с лёгкой игривостью и естественной интонацией." }
+      }] }],
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
+          languageCode: "ru-RU"
+        }
+      }
+    }),
+    signal: AbortSignal.timeout(90000)
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error("Gemini TTS HTTP " + response.status + ": " + raw.slice(0, 400));
+  const data = JSON.parse(raw);
+  const encoded = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data)?.inlineData?.data;
+  if (!encoded) throw new Error("Gemini TTS returned no audio");
+  return Buffer.from(encoded, "base64");
+}
+
+function wavToMp3(wav) {
+  const lamejs = require("lamejs");
+  if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") {
+    throw new Error("TTS returned an unsupported WAV file");
+  }
+  let offset = 12, channels = 1, sampleRate = 24000, bits = 16, pcmOffset = -1, pcmLength = 0;
+  while (offset + 8 <= wav.length) {
+    const chunk = wav.toString("ascii", offset, offset + 4);
+    const size = wav.readUInt32LE(offset + 4);
+    if (chunk === "fmt " && size >= 16) {
+      channels = wav.readUInt16LE(offset + 10);
+      sampleRate = wav.readUInt32LE(offset + 12);
+      bits = wav.readUInt16LE(offset + 22);
+    }
+    if (chunk === "data") { pcmOffset = offset + 8; pcmLength = size; break; }
+    offset += 8 + size + (size % 2);
+  }
+  if (pcmOffset < 0 || bits !== 16 || (channels !== 1 && channels !== 2)) {
+    throw new Error("Unsupported TTS WAV audio format");
+  }
+  const encoder = new lamejs.Mp3Encoder(1, sampleRate, 64);
+  const samples = Math.floor(pcmLength / (2 * channels));
+  const output = [];
+  for (let start = 0; start < samples; start += 1152) {
+    const count = Math.min(1152, samples - start);
+    const mono = new Int16Array(count);
+    for (let i = 0; i < count; i++) {
+      const pos = pcmOffset + (start + i) * channels * 2;
+      const left = wav.readInt16LE(pos);
+      mono[i] = channels === 2 ? Math.round((left + wav.readInt16LE(pos + 2)) / 2) : left;
+    }
+    const encoded = encoder.encodeBuffer(mono);
+    if (encoded.length) output.push(Buffer.from(encoded));
+  }
+  const finalChunk = encoder.flush();
+  if (finalChunk.length) output.push(Buffer.from(finalChunk));
+  return Buffer.concat(output);
+}
+
+async function sendTelegramVoice(chatId, voice) {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("voice", new Blob([voice], { type: "audio/mpeg" }), "mindora.mp3");
+  const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendVoice`, { method: "POST", body: form });
+  if (!response.ok) throw new Error("Telegram sendVoice error: " + await response.text());
+}
+
+async function answerVoiceMessage(chatId, userId, fileId) {
+  await sendTelegram(chatId, "Слушаю тебя 🎧");
+  const transcript = await transcribeVoice(await getTelegramAudio(fileId));
+  if (!transcript) {
+    await sendTelegram(chatId, "Кажется, я ничего не расслышала 😅 Попробуй записать ещё раз.");
+    return;
+  }
+  const answer = await askGigaChat(userId, transcript);
+  try {
+    await sendTelegramVoice(chatId, wavToMp3(await createVoiceReply(answer)));
+  } catch (error) {
+    console.error("Voice generation failed; sending text fallback:", error.message);
+    await sendTelegram(chatId, answer);
+  }
+}
+
 async function describeTelegramPhoto(fileId) {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("GEMINI_API_KEY is not configured");
@@ -686,7 +810,7 @@ const server = http.createServer((req, res) => {
           chatId,
           "Очистку истории добавим отдельно ❤️"
         );
-      } else if (message.photo?.length) {
+      } else if (message.voice || message.audio) {\n        await answerVoiceMessage(chatId, userId, (message.voice || message.audio).file_id);\n      } else if (message.photo?.length) {
         const photoMeta = message.photo[message.photo.length - 1];
         const editIntent = /^(\/edit\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
         if (editIntent) {
