@@ -977,20 +977,33 @@ async function identifySongByLyrics(chatId, question) {
     await sendTelegram(chatId, msg);
     return msg;
   }
-  const results = await searchPublicWeb('"' + lyric + '" песня кто исполняет название');
+
+  const [webResults, telegramResults] = await Promise.all([
+    searchPublicWeb('"' + lyric + '" песня кто исполняет название'),
+    searchPublicWeb('site:t.me "' + lyric + '" музыка OR песня')
+  ]);
+  const unique = new Map();
+  for (const item of [...telegramResults, ...webResults]) {
+    if (!item?.url || !/^https?:\/\//i.test(item.url)) continue;
+    if (!unique.has(item.url)) unique.set(item.url, item);
+  }
+  const results = [...unique.values()].slice(0, 7);
   if (!results.length) {
     const msg = "Пока не нашла совпадений 😔 Пришли ещё одну строчку или добавь пару слов из припева.";
     await sendTelegram(chatId, msg);
     return msg;
   }
-  const lines = results.slice(0, 5).map((item, i) =>
-    (i + 1) + ". " + item.title + (item.snippet ? "\n" + item.snippet : "") + "\n" + item.url
-  );
-  const answer = "🔎 Ищу песню по твоей строчке:\n«" + lyric.slice(0, 250) + "»\n\n" +
-    lines.join("\n\n") +
-    "\n\nЕсли узнаешь нужную, напиши её название — пришлю доступный аудиофрагмент и ссылку на полную версию. Полные коммерческие песни целиком можно отправлять только с разрешения правообладателя ❤️";
+  const telegramLinks = results.filter(item => /(^|\.)t\.me\//i.test(item.url));
+  const otherLinks = results.filter(item => !/(^|\.)t\.me\//i.test(item.url));
+  const format = (items, offset = 0) => items.map((item, i) =>
+    (offset + i + 1) + ". " + item.title + (item.snippet ? "\n" + item.snippet : "") + "\n" + item.url
+  ).join("\n\n");
+  let answer = "🔎 Ищу песню по твоей строчке:\n«" + lyric.slice(0, 200) + "»\n\n";
+  if (telegramLinks.length) answer += "🎧 Публичные Telegram-посты:\n" + format(telegramLinks) + "\n\n";
+  if (otherLinks.length) answer += "Другие совпадения:\n" + format(otherLinks, telegramLinks.length) + "\n\n";
+  answer += "Если в посте есть полный трек, открой его по ссылке. Сам бот не может читать все Telegram-каналы или скачивать чужие посты по ссылке: он сможет переслать аудио только из источника, к которому ему дали доступ, и если файл разрешено распространять.";
   await sendTelegram(chatId, answer);
-  return "Поиск песни по строчке: " + lyric.slice(0, 500);
+  return "Поиск песни по строчке: " + lyric.slice(0, 500) + ". Telegram результатов: " + telegramLinks.length;
 }
 
 async function searchAndSendSongs(chatId, question) {
@@ -1193,7 +1206,11 @@ const server = http.createServer((req, res) => {
             chatId,
             "Пока доступны команды /start и /reset ❤️"
           );
-        } else if (isLyricIdentificationRequest(question)) {\n          const answer = await identifySongByLyrics(chatId, question);\n          try {\n            await saveMessage(userId, "user", question);\n            await saveMessage(userId, "assistant", answer);\n          } catch (error) {\n            console.error("Lyric search history save error:", error.message);\n          }\n        } else if (isFullSongRequest(question)) {
+        } else if (isLyricIdentificationRequest(question)) {
+          const answer = await identifySongByLyrics(chatId, question);
+          try {
+            await saveMessage(userId, "user", question);
+            await saveMessage(userId, "assistant", answer);\n          } catch (error) {\n            console.error("Lyric search history save error:", error.message);\n          }\n        } else if (isFullSongRequest(question)) {
           const answer = await searchAndSendSongs(chatId, question);
           try {
             await saveMessage(userId, "user", question);
