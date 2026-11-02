@@ -200,27 +200,70 @@ async function extractMemories(token, question, oldMemories) {
   }
 }
 
-// Поиск товаров на Wildberries и Ozon
+// Реальный поиск товаров Wildberries через публичный поисковый endpoint
 function isMarketplaceSearch(question) {
-  return /(найди|поищи|подбери|ищи|посоветуй).*(вб|wb|wildberries|озон|ozon)|(вб|wb|wildberries|озон|ozon).*(найди|поищи|подбери|товар)/i.test(question);
+  return /(найди|поищи|подбери|ищи|посоветуй).*(вб|wb|wildberries|товар|шампунь|телефон|наушник|крем|одежд)|(вб|wb|wildberries).*(найди|поищи|подбери|товар)/i.test(question);
 }
 
-function marketplaceSearch(question) {
-  const query = question
-    .replace(/найди|поищи|подбери|ищи|посоветуй|мне|товар|товары|на вб|на wb|на wildberries|на озон|на ozon/gi, "")
+function extractMarketplaceQuery(question) {
+  return question
+    .replace(/^(найди|поищи|подбери|ищи|посоветуй)\\s*/i, "")
+    .replace(/\\b(на\\s*)?(вб|wb|wildberries)\\b/gi, "")
+    .replace(/\\b(мне|пожалуйста|товар|товары)\\b/gi, "")
+    .replace(/[!?.,]+/g, " ")
+    .replace(/\\s+/g, " ")
     .trim();
+}
 
-  const encoded = encodeURIComponent(query || question);
+async function searchWildberries(question) {
+  const query = extractMarketplaceQuery(question);
+  if (!query || query.length < 2) {
+    return "Напиши, что именно ищем — например: «найди шампунь для сухих волос на WB» ❤️";
+  }
 
-  return `🛍️ Вот где можно посмотреть:
+  const params = new URLSearchParams({
+    appType: "1", curr: "rub", dest: "-1257786", lang: "ru",
+    page: "1", query, resultset: "catalog", sort: "popular", spp: "30"
+  });
 
-🟣 Wildberries:
-https://www.wildberries.ru/catalog/0/search.aspx?search=${encoded}
+  try {
+    const response = await fetch(
+      "https://search.wb.ru/exactmatch/ru/common/v18/search?" + params.toString(),
+      {
+        headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+        signal: AbortSignal.timeout(12000)
+      }
+    );
+    if (!response.ok) throw new Error("Wildberries HTTP " + response.status);
 
-🔵 Ozon:
-https://www.ozon.ru/search/?text=${encoded}
+    const data = await response.json();
+    const products = data?.data?.products || [];
+    if (!products.length) {
+      return "По запросу «" + query + "» на Wildberries ничего не нашла. Попробуй изменить формулировку: https://www.wildberries.ru/catalog/0/search.aspx?search=" + encodeURIComponent(query);
+    }
 
-Выбери подходящие товары и сравни цены, отзывы и характеристики ❤️`;
+    const cards = products.slice(0, 5).map((p, i) => {
+      const rawPrice = p.salePriceU ?? p.priceU ?? p.sizes?.[0]?.price?.product;
+      const price = Number(rawPrice) / 100;
+      const rating = Number(p.rating);
+      const reviews = Number(p.feedbacks);
+      return [
+        (i + 1) + ". " + (p.name || "Товар"),
+        p.brand ? "Бренд: " + p.brand : "",
+        Number.isFinite(price) && price > 0 ? "Цена: " + Math.round(price).toLocaleString("ru-RU") + " ₽" : "Цена не указана",
+        Number.isFinite(rating) && rating > 0 ? "Рейтинг: " + rating.toFixed(1) + "/5" : "",
+        Number.isFinite(reviews) && reviews > 0 ? "Отзывы: " + reviews.toLocaleString("ru-RU") : "",
+        "https://www.wildberries.ru/catalog/" + p.id + "/detail.aspx"
+      ].filter(Boolean).join("\\n");
+    });
+
+    return "🛍️ Нашла на Wildberries по запросу «" + query + "»:\\n\\n" +
+      cards.join("\\n\\n") +
+      "\\n\\nЦены и наличие могут меняться. Поиск использует неофициальный endpoint WB.";
+  } catch (error) {
+    console.error("Wildberries search error:", error.message);
+    return "Не получилось получить товары с Wildberries прямо сейчас 😔 Попробуй позже.\\n\\nПоиск WB: https://www.wildberries.ru/catalog/0/search.aspx?search=" + encodeURIComponent(query);
+  }
 }
 
 // Личность Mindora
@@ -417,7 +460,7 @@ const server = http.createServer((req, res) => {
           "Пока доступны команды /start и /reset ❤️"
         );
       } else if (isMarketplaceSearch(question)) {
-        const answer = marketplaceSearch(question);
+        const answer = await searchWildberries(question);
 
         try {
           await saveMessage(userId, "user", question);
