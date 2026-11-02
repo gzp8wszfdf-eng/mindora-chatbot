@@ -1190,7 +1190,8 @@ async function sendTelegram(chatId, message) {
 
 
 function isWeatherQuestion(question) {
-  return /(погод[ауы]|прогноз погоды|температур[ауы]|будет дождь|пойд[её]т дождь|снегопад|ветер сегодня|погода завтра)/i.test(String(question || ""));
+  const q = String(question || "").toLocaleLowerCase("ru-RU");
+  return /погод|прогноз|температур|дожд|снег|снегопад|ветер|осадки|мороз|жара/.test(q);
 }
 
 function extractWeatherCity(question) {
@@ -1289,8 +1290,9 @@ async function getWeatherReport(question) {
         Math.round(Math.max(...temps)) + "°C.");
       dayIndex++;
     }
-    lines.push("", "Источник: MET Norway · прогноз может обновляться с задержкой.");
-    return lines.join("\\n");
+    lines.push("", "Источник: MET Norway · время прогноза: " +
+      new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short", timeZone: place.timezone || "Europe/Moscow" }).format(new Date(now.time)) + ".");
+    return lines.join("\n");
   }
   const data = await weatherResponse.json();
   const current = data.current;
@@ -1493,6 +1495,7 @@ const server = http.createServer((req, res) => {
             await handleImageEdit(chatId, userId, pending.photo, question);
           }
         } else if (isWeatherQuestion(question)) {
+          console.log("WEATHER_ROUTE_MATCHED:", question);
           try {
             const answer = await getWeatherReport(question);
             await sendTelegram(chatId, answer);
