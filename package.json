@@ -10,6 +10,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "ffmpeg-static": "^5.2.0"
+    "lamejs": "^1.2.1"
   }
 }
