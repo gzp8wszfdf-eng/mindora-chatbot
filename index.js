@@ -207,11 +207,11 @@ function isMarketplaceSearch(question) {
 
 function extractMarketplaceQuery(question) {
   return question
-    .replace(/^(найди|поищи|подбери|ищи|посоветуй)\\s*/i, "")
-    .replace(/\\b(на\\s*)?(вб|wb|wildberries)\\b/gi, "")
-    .replace(/\\b(мне|пожалуйста|товар|товары)\\b/gi, "")
+    .replace(/^(найди|поищи|подбери|ищи|посоветуй)\s*/i, "")
+    .replace(/\b(на\s*)?(вб|wb|wildberries)\b/gi, "")
+    .replace(/\b(мне|пожалуйста|товар|товары)\b/gi, "")
     .replace(/[!?.,]+/g, " ")
-    .replace(/\\s+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
