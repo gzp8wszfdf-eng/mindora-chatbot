@@ -755,18 +755,18 @@ async function searchPublicWeb(query) {
 
 // Поиск конкретных песен в официальном каталоге Apple/iTunes.
 function isFullSongRequest(question) {
-  return /(найди|поищи|подбери|включи|скинь|пришли|отправь|хочу послушать|где послушать).{0,100}(песн|трек|композиц|музык)|^(песню|трек)\\s+/i.test(question) ||
+  return /(найди|поищи|подбери|включи|скинь|пришли|отправь|хочу послушать|где послушать).{0,100}(песн|трек|композиц|музык)|^(песню|трек)\s+/i.test(question) ||
     /(песню|трек).{0,100}(найди|поищи|включи|скинь|пришли|отправь)/i.test(question);
 }
 
 function extractSongQuery(question) {
   return question
-    .replace(/^\\s*(медора|миндора)[,!]?\\s*/i, "")
-    .replace(/^\\s*(найди|поищи|подбери|включи|скинь|пришли|отправь)\\s*/i, "")
-    .replace(/^\\s*(мне\\s+)?(песню|песн[юи]|трек|композицию)\\s*/i, "")
-    .replace(/\\b(пожалуйста|мне|полную версию|целиком|в телеграм)\\b/gi, "")
+    .replace(/^\s*(миндора)[,!]?\s*/i, "")
+    .replace(/^\s*(найди|поищи|подбери|включи|скинь|пришли|отправь)\s*/i, "")
+    .replace(/^\s*(мне\s+)?(песню|песн[юи]|трек|композицию)\s*/i, "")
+    .replace(/\b(пожалуйста|мне|полную версию|целиком|в телеграм)\b/gi, "")
     .replace(/[!?.,]+/g, " ")
-    .replace(/\\s+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -777,7 +777,6 @@ async function searchFullSongs(question) {
   }
 
   let data = null;
-  let usedCountry = "";
   for (const country of ["ru", "de", "us"]) {
     try {
       const url = "https://itunes.apple.com/search?term=" +
@@ -790,7 +789,6 @@ async function searchFullSongs(question) {
       const candidate = await response.json();
       if (Array.isArray(candidate.results) && candidate.results.length) {
         data = candidate;
-        usedCountry = country;
         break;
       }
     } catch (error) {
@@ -809,14 +807,14 @@ async function searchFullSongs(question) {
   const lines = tracks.map((track, index) => {
     const title = cleanSearchText(track.trackName);
     const artist = cleanSearchText(track.artistName);
-    const album = track.collectionName ? "\\nАльбом: " + cleanSearchText(track.collectionName) : "";
+    const album = track.collectionName ? "\nАльбом: " + cleanSearchText(track.collectionName) : "";
     return (index + 1) + ". " + title + " — " + artist + album +
-      "\\nПолная версия: " + track.trackViewUrl;
+      "\nПолная версия: " + track.trackViewUrl;
   });
 
-  return "🎵 Нашла варианты по запросу «" + query + "»:\\n\\n" +
-    lines.join("\\n\\n") +
-    "\\n\\nОткрой ссылку, чтобы слушать полную версию в музыкальном сервисе. Сам файл песни я могу переслать только если правообладатель разрешает его распространение ❤️";
+  return "🎵 Нашла варианты по запросу «" + query + "»:\n\n" +
+    lines.join("\n\n") +
+    "\n\nОткрой ссылку, чтобы слушать полную версию в музыкальном сервисе. Сам файл песни я могу переслать только если правообладатель разрешает его распространение ❤️";
 }
 
 async function searchMediaAndWeb(question) {
