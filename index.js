@@ -302,15 +302,15 @@ async function searchWildberries(question) {
         Number.isFinite(rating) && rating > 0 ? "Рейтинг: " + rating.toFixed(1) + "/5" : "",
         Number.isFinite(reviews) && reviews > 0 ? "Отзывы: " + reviews.toLocaleString("ru-RU") : "",
         "https://www.wildberries.ru/catalog/" + p.id + "/detail.aspx"
-      ].filter(Boolean).join("\\n");
+      ].filter(Boolean).join("\n");
     });
 
-    return "🛍️ Нашла на Wildberries по запросу «" + query + "»:\\n\\n" +
-      cards.join("\\n\\n") +
-      "\\n\\nЦены и наличие могут меняться. Поиск использует неофициальный endpoint WB.";
+    return "🛍️ Нашла на Wildberries по запросу «" + query + "»:\n\n" +
+      cards.join("\n\n") +
+      "\n\nЦены и наличие могут меняться. Поиск использует неофициальный endpoint WB.";
   } catch (error) {
     console.error("Wildberries search error:", error.message);
-    return "Не получилось получить товары с Wildberries прямо сейчас 😔 Попробуй позже.\\n\\nПоиск WB: https://www.wildberries.ru/catalog/0/search.aspx?search=" + encodeURIComponent(query);
+    return "Не получилось получить товары с Wildberries прямо сейчас 😔 Попробуй позже.\n\nПоиск WB: https://www.wildberries.ru/catalog/0/search.aspx?search=" + encodeURIComponent(query);
   }
 }
 
@@ -511,7 +511,7 @@ const server = http.createServer((req, res) => {
           await sendTelegram(chatId, "На фото вижу: " + description + ". Пришли фото самого товара, и я попробую найти его ❤️");
         } else {
           const answer = await searchWildberries(description);
-          const fullAnswer = "На фото похоже на: " + description + "\\n\\n" + answer;
+          const fullAnswer = "На фото похоже на: " + description + "\n\n" + answer;
           try {
             await saveMessage(userId, "user", "[Фото товара] " + description);
             await saveMessage(userId, "assistant", fullAnswer);
