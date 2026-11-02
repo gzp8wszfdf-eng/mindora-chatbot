@@ -785,126 +785,128 @@ const server = http.createServer((req, res) => {
     }
   });
 
-  req.on("end", async () => {
-    try {
-      if (tooLarge) throw new Error("Request too large");
-
-      const update = JSON.parse(body);
-      const message = update.message;
-
-      if ((!message?.text && !message?.photo?.length && !message?.voice && !message?.audio) || !message.chat?.id) {
-        res.writeHead(200);
-        res.end("OK");
-        return;
-      }
-
-      const chatId = message.chat.id;
-      const userId = message.from?.id || chatId;
-      const question = (message.text || message.caption || "").trim();
-
-      if (question === "/start") {
-        await sendTelegram(
-          chatId,
-          "Привет! Я Mindora 2.1 ❤️ Я помню наши разговоры и теперь могу помогать искать товары на Wildberries и Ozon!"
-        );
-      } else if (question === "/reset") {
-        await sendTelegram(
-          chatId,
-          "Очистку истории добавим отдельно ❤️"
-        );
-      } else if (message.voice || message.audio) {
-        await answerVoiceMessage(chatId, userId, (message.voice || message.audio).file_id);
-      } else if (message.photo?.length) {
-        const photoMeta = message.photo[message.photo.length - 1];
-        const editIntent = /^(\/edit\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
-        if (editIntent) {
-          const photo = await downloadTelegramPhoto(photoMeta.file_id);
-          await handleImageEdit(chatId, userId, photo, question);
-          res.writeHead(200); res.end('OK'); return;
-        }
-        await sendTelegram(chatId, 'Фото получила ❤️ Сейчас попробую распознать товар. Чтобы отредактировать его, отправь следом команду /edit и напиши, что изменить.');
-        const photo = photoMeta;
-        let cachedPhoto = null;
-        try { cachedPhoto = await downloadTelegramPhoto(photo.file_id); pendingEditPhotos.set(String(userId), { photo: cachedPhoto, createdAt: Date.now() }); }
-        catch (downloadError) { console.warn('Could not cache photo for editing:', downloadError.message); }
-        let description;
-        try {
-          description = await describeTelegramPhoto(photo.file_id);
-        } catch (visionError) {
-          console.error("Photo recognition failed:", visionError.message);
-          await sendTelegram(chatId, "Не получилось распознать фото 😔 Попробуй отправить его ещё раз, желательно чётче и поближе. Либо напиши название товара — я сразу попробую найти его на WB.");
-          res.writeHead(200);
-          res.end("OK");
-          return;
-        }
-        if (/не товар|человек|животн|пейзаж|не изображен товар/i.test(description)) {
-          await sendTelegram(chatId, "На фото вижу: " + description + ". Пришли фото самого товара, и я попробую найти его ❤️");
-        } else {
-          await sendTelegram(chatId, "Похоже, это: " + description + ". Ищу товары на маркетплейсах 🔎");
-          const answer = await searchMarketplaces(description);
-          const fullAnswer = "На фото похоже на: " + description + "\n\n" + answer;
-          try {
-            await saveMessage(userId, "user", "[Фото товара] " + description);
-            await saveMessage(userId, "assistant", fullAnswer);
-          } catch (error) {
-            console.error("Photo history save error:", error.message);
-          }
-          await sendTelegram(chatId, fullAnswer);
-        }
-      } else if (question.startsWith('/edit') || pendingEditPhotos.has(String(userId)) && /^(измени|отредактируй|убери|замени|поменяй|улучши|сделай)/i.test(question)) {
-        const pending = pendingEditPhotos.get(String(userId));
-        if (!pending || Date.now() - pending.createdAt > 10 * 60 * 1000) {
-          pendingEditPhotos.delete(String(userId));
-          await sendTelegram(chatId, 'Сначала отправь фото, затем команду /edit и описание изменений ❤️');
-        } else {
-          pendingEditPhotos.delete(String(userId));
-          await handleImageEdit(chatId, userId, pending.photo, question);
-        }
-      } else if (question.startsWith("/")) {
-        await sendTelegram(
-          chatId,
-          "Пока доступны команды /start и /reset ❤️"
-        );
-      } else if (isMarketplaceSearch(question)) {
-        const answer = await searchMarketplaces(question);
-
-        try {
-          await saveMessage(userId, "user", question);
-          await saveMessage(userId, "assistant", answer);
-        } catch (error) {
-          console.error("History save error:", error.message);
-        }
-
-        await sendTelegram(chatId, answer);
-      } else {
-        const answer = await askGigaChat(userId, question);
-        await sendTelegram(chatId, answer);
-      }
-
+  req.on("end", () => {
+    if (tooLarge) {
+      console.error("Telegram webhook request too large");
       res.writeHead(200);
       res.end("OK");
+      return;
+    }
+
+    let update;
+    try {
+      update = JSON.parse(body);
     } catch (error) {
-      console.error("Telegram handler error:", error);
+      console.error("Invalid Telegram webhook JSON:", error.message);
+      res.writeHead(200);
+      res.end("OK");
+      return;
+    }
 
+    const message = update.message;
+    if ((!message?.text && !message?.photo?.length && !message?.voice && !message?.audio) || !message.chat?.id) {
+      res.writeHead(200);
+      res.end("OK");
+      return;
+    }
+
+    // Acknowledge Telegram immediately. Each update is processed independently below,
+    // so a slow voice/image request cannot block delivery of the next user's update.
+    res.writeHead(200);
+    res.end("OK");
+
+    void (async () => {
       try {
-        const update = JSON.parse(body);
-        const chatId = update.message?.chat?.id;
+        const chatId = message.chat.id;
+        const userId = message.from?.id || chatId;
+        const question = (message.text || message.caption || "").trim();
 
-        if (chatId) {
+        if (question === "/start") {
           await sendTelegram(
             chatId,
+            "Привет! Я Mindora 2.1 ❤️ Я помню наши разговоры и теперь могу помогать искать товары на Wildberries и Ozon!"
+          );
+        } else if (question === "/reset") {
+          await sendTelegram(
+            chatId,
+            "Очистку истории добавим отдельно ❤️"
+          );
+        } else if (message.voice || message.audio) {
+          await answerVoiceMessage(chatId, userId, (message.voice || message.audio).file_id);
+        } else if (message.photo?.length) {
+          const photoMeta = message.photo[message.photo.length - 1];
+          const editIntent = /^(\\/edit\\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
+          if (editIntent) {
+            const photo = await downloadTelegramPhoto(photoMeta.file_id);
+            await handleImageEdit(chatId, userId, photo, question);
+            return;
+          }
+          await sendTelegram(chatId, 'Фото получила ❤️ Сейчас попробую распознать товар. Чтобы отредактировать его, отправь следом команду /edit и напиши, что изменить.');
+          const photo = photoMeta;
+          let cachedPhoto = null;
+          try { cachedPhoto = await downloadTelegramPhoto(photo.file_id); pendingEditPhotos.set(String(userId), { photo: cachedPhoto, createdAt: Date.now() }); }
+          catch (downloadError) { console.warn('Could not cache photo for editing:', downloadError.message); }
+          let description;
+          try {
+            description = await describeTelegramPhoto(photo.file_id);
+          } catch (visionError) {
+            console.error("Photo recognition failed:", visionError.message);
+            await sendTelegram(chatId, "Не получилось распознать фото 😔 Попробуй отправить его ещё раз, желательно чётче и поближе. Либо напиши название товара — я сразу попробую найти его на WB.");
+            return;
+          }
+          if (/не товар|человек|животн|пейзаж|не изображен товар/i.test(description)) {
+            await sendTelegram(chatId, "На фото вижу: " + description + ". Пришли фото самого товара, и я попробую найти его ❤️");
+          } else {
+            await sendTelegram(chatId, "Похоже, это: " + description + ". Ищу товары на маркетплейсах 🔎");
+            const answer = await searchMarketplaces(description);
+            const fullAnswer = "На фото похоже на: " + description + "\n\n" + answer;
+            try {
+              await saveMessage(userId, "user", "[Фото товара] " + description);
+              await saveMessage(userId, "assistant", fullAnswer);
+            } catch (error) {
+              console.error("Photo history save error:", error.message);
+            }
+            await sendTelegram(chatId, fullAnswer);
+          }
+        } else if (question.startsWith('/edit') || pendingEditPhotos.has(String(userId)) && /^(измени|отредактируй|убери|замени|поменяй|улучши|сделай)/i.test(question)) {
+          const pending = pendingEditPhotos.get(String(userId));
+          if (!pending || Date.now() - pending.createdAt > 10 * 60 * 1000) {
+            pendingEditPhotos.delete(String(userId));
+            await sendTelegram(chatId, 'Сначала отправь фото, затем команду /edit и описание изменений ❤️');
+          } else {
+            pendingEditPhotos.delete(String(userId));
+            await handleImageEdit(chatId, userId, pending.photo, question);
+          }
+        } else if (question.startsWith("/")) {
+          await sendTelegram(
+            chatId,
+            "Пока доступны команды /start и /reset ❤️"
+          );
+        } else if (isMarketplaceSearch(question)) {
+          const answer = await searchMarketplaces(question);
+          try {
+            await saveMessage(userId, "user", question);
+            await saveMessage(userId, "assistant", answer);
+          } catch (error) {
+            console.error("History save error:", error.message);
+          }
+          await sendTelegram(chatId, answer);
+        } else {
+          const answer = await askGigaChat(userId, question);
+          await sendTelegram(chatId, answer);
+        }
+      } catch (error) {
+        console.error("Telegram background handler error:", error);
+        try {
+          await sendTelegram(
+            message.chat.id,
             "Ой, у меня небольшая техническая проблема 😔 Попробуй ещё раз чуть позже."
           );
+        } catch (sendError) {
+          console.error("Error notification failed:", sendError.message);
         }
-      } catch (sendError) {
-        console.error("Error notification failed:", sendError.message);
       }
-
-      if (!res.headersSent) {
-        res.writeHead(200);
-        res.end("OK");
-      }
-    }
+    })();
   });
 });
 
