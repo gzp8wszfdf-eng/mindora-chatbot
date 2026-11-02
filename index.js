@@ -1188,6 +1188,87 @@ async function sendTelegram(chatId, message) {
 }
 
 
+
+function isWeatherQuestion(question) {
+  return /\b(погод[ауы]|погоду|прогноз погоды|температур[ауы]|будет дождь|пойд[её]т дождь|снегопад|ветер сегодня|погода завтра)\b/i.test(String(question || ""));
+}
+
+function extractWeatherCity(question) {
+  const q = String(question || "").trim();
+  const match = q.match(/(?:погод[ауы]|прогноз(?: погоды)?|температур[ауы]|дожд[ья]|снег)\s+(?:в|во|для)\s+([^,?.!]+)/i) ||
+    q.match(/\b(?:в|во)\s+([А-ЯЁA-Z][А-ЯЁа-яёA-Za-z -]{1,45})\s*(?:сейчас|сегодня|завтра|на неделю)?[?.!]*$/);
+  if (!match) return "";
+  return match[1].trim().replace(/\s+(сейчас|сегодня|завтра|на неделю)$/i, "");
+}
+
+function weatherDescription(code) {
+  const descriptions = {
+    0: "ясно", 1: "преимущественно ясно", 2: "переменная облачность", 3: "пасмурно",
+    45: "туман", 48: "изморозевый туман", 51: "лёгкая морось", 53: "морось",
+    55: "сильная морось", 56: "ледяная морось", 57: "сильная ледяная морось",
+    61: "небольшой дождь", 63: "дождь", 65: "сильный дождь", 66: "ледяной дождь",
+    67: "сильный ледяной дождь", 71: "небольшой снег", 73: "снег", 75: "сильный снег",
+    77: "снежные зёрна", 80: "ливень", 81: "сильный ливень", 82: "очень сильный ливень",
+    85: "снегопад", 86: "сильный снегопад", 95: "гроза", 96: "гроза с градом",
+    99: "сильная гроза с градом"
+  };
+  return descriptions[code] || "условия неизвестны";
+}
+
+async function getWeatherReport(question) {
+  const city = extractWeatherCity(question);
+  if (!city) {
+    return "Конечно! 🌤 Напиши, для какого города посмотреть погоду — например: «Погода в Минеральных Водах»";
+  }
+
+  const geoUrl = "https://geocoding-api.open-meteo.com/v1/search?name=" +
+    encodeURIComponent(city) + "&count=1&language=ru&format=json";
+  const geoResponse = await fetch(geoUrl, { signal: AbortSignal.timeout(15000) });
+  if (!geoResponse.ok) throw new Error("Weather geocoding HTTP " + geoResponse.status);
+  const geo = await geoResponse.json();
+  const place = geo.results && geo.results[0];
+  if (!place) return "Не нашла город «" + city + "» 😔 Напиши название чуть точнее.";
+
+  const params = new URLSearchParams({
+    latitude: String(place.latitude),
+    longitude: String(place.longitude),
+    current: "temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m",
+    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+    forecast_days: "3",
+    timezone: "auto"
+  });
+  const weatherResponse = await fetch("https://api.open-meteo.com/v1/forecast?" + params.toString(), {
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!weatherResponse.ok) throw new Error("Weather forecast HTTP " + weatherResponse.status);
+  const data = await weatherResponse.json();
+  const current = data.current;
+  if (!current) throw new Error("Weather API returned no current conditions");
+
+  const location = [place.name, place.admin1, place.country].filter(Boolean).join(", ");
+  const lines = [
+    "🌤 Погода: " + location,
+    "Сейчас: " + Math.round(current.temperature_2m) + "°C, ощущается как " +
+      Math.round(current.apparent_temperature) + "°C, " + weatherDescription(current.weather_code) + ".",
+    "Ветер: " + Math.round(current.wind_speed_10m) + " км/ч · влажность: " +
+      Math.round(current.relative_humidity_2m) + "%."
+  ];
+  if (data.daily && data.daily.time) {
+    lines.push("", "Прогноз:");
+    for (let i = 0; i < data.daily.time.length; i++) {
+      const date = new Date(data.daily.time[i] + "T12:00:00");
+      const label = i === 0 ? "Сегодня" : i === 1 ? "Завтра" :
+        new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long" }).format(date);
+      lines.push(label + ": " + weatherDescription(data.daily.weather_code[i]) + ", " +
+        Math.round(data.daily.temperature_2m_min[i]) + "… " +
+        Math.round(data.daily.temperature_2m_max[i]) + "°C, вероятность осадков до " +
+        (data.daily.precipitation_probability_max[i] ?? 0) + "%.");
+    }
+  }
+  lines.push("", "Данные Open-Meteo · обновлено: " + current.time.replace("T", " ") + " (местное время).");
+  return lines.join("\n");
+}
+
 const superpowerGames = new Map();
 
 function isSuperpowerGameStart(question) {
@@ -1359,6 +1440,20 @@ const server = http.createServer((req, res) => {
           } else {
             pendingEditPhotos.delete(String(userId));
             await handleImageEdit(chatId, userId, pending.photo, question);
+          }
+        } else if (isWeatherQuestion(question)) {
+          try {
+            const answer = await getWeatherReport(question);
+            await sendTelegram(chatId, answer);
+            try {
+              await saveMessage(userId, "user", question);
+              await saveMessage(userId, "assistant", answer);
+            } catch (historyError) {
+              console.error("Weather history save error:", historyError.message);
+            }
+          } catch (weatherError) {
+            console.error("Weather lookup failed:", weatherError.message);
+            await sendTelegram(chatId, "Не получилось получить прогноз прямо сейчас 😔 Попробуй ещё раз через минуту.");
           }
         } else if (isSuperpowerGameStop(question) && superpowerGames.has(String(chatId))) {
           superpowerGames.delete(String(chatId));
