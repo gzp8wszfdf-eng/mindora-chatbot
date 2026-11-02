@@ -954,6 +954,45 @@ async function sendTelegramAudio(chatId, track) {
   return true;
 }
 
+function isLyricIdentificationRequest(question) {
+  return /(найди|определи|узнай|что за|как называется|кто по[её]т).{0,100}(песн|трек).{0,60}(слов|текст|строчк)|((по|из)\\s+(словам|тексту|строчке)).{0,80}(песн|трек)|(найди|определи|узнай).{0,80}(песн|трек).{0,80}(по словам|по тексту|по строчке)/i.test(question);
+}
+
+function extractLyricQuery(question) {
+  return question
+    .replace(/^\\s*(миндора)[,!]?\\s*/i, "")
+    .replace(/^(найди|определи|узнай|что за песня|как называется песня|кто по[её]т)\\s*/i, "")
+    .replace(/(найди|определи|узнай)\\s+песню\\s+(по словам|по тексту|по строчке)\\s*/i, "")
+    .replace(/^(по словам|по тексту|по строчке)\\s*/i, "")
+    .replace(/[«»"']/g, " ")
+    .replace(/[!?.,]+/g, " ")
+    .replace(/\\s+/g, " ")
+    .trim();
+}
+
+async function identifySongByLyrics(chatId, question) {
+  const lyric = extractLyricQuery(question);
+  if (!lyric || lyric.length < 5) {
+    const msg = "Пришли хотя бы одну строчку из песни — попробую узнать её 🎵";
+    await sendTelegram(chatId, msg);
+    return msg;
+  }
+  const results = await searchPublicWeb('"' + lyric + '" песня кто исполняет название');
+  if (!results.length) {
+    const msg = "Пока не нашла совпадений 😔 Пришли ещё одну строчку или добавь пару слов из припева.";
+    await sendTelegram(chatId, msg);
+    return msg;
+  }
+  const lines = results.slice(0, 5).map((item, i) =>
+    (i + 1) + ". " + item.title + (item.snippet ? "\\n" + item.snippet : "") + "\\n" + item.url
+  );
+  const answer = "🔎 Ищу песню по твоей строчке:\\n«" + lyric.slice(0, 250) + "»\\n\\n" +
+    lines.join("\\n\\n") +
+    "\\n\\nЕсли узнаешь нужную, напиши её название — пришлю доступный аудиофрагмент и ссылку на полную версию. Полные коммерческие песни целиком можно отправлять только с разрешения правообладателя ❤️";
+  await sendTelegram(chatId, answer);
+  return "Поиск песни по строчке: " + lyric.slice(0, 500);
+}
+
 async function searchAndSendSongs(chatId, question) {
   const query = extractSongQuery(question);
   if (!query || query.length < 2) {
@@ -1154,7 +1193,7 @@ const server = http.createServer((req, res) => {
             chatId,
             "Пока доступны команды /start и /reset ❤️"
           );
-        } else if (isFullSongRequest(question)) {
+        } else if (isLyricIdentificationRequest(question)) {\n          const answer = await identifySongByLyrics(chatId, question);\n          try {\n            await saveMessage(userId, "user", question);\n            await saveMessage(userId, "assistant", answer);\n          } catch (error) {\n            console.error("Lyric search history save error:", error.message);\n          }\n        } else if (isFullSongRequest(question)) {
           const answer = await searchAndSendSongs(chatId, question);
           try {
             await saveMessage(userId, "user", question);
