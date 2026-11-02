@@ -1190,7 +1190,7 @@ async function sendTelegram(chatId, message) {
 
 
 function isWeatherQuestion(question) {
-  return /\b(погод[ауы]|погоду|прогноз погоды|температур[ауы]|будет дождь|пойд[её]т дождь|снегопад|ветер сегодня|погода завтра)\b/i.test(String(question || ""));
+  return /(погод[ауы]|прогноз погоды|температур[ауы]|будет дождь|пойд[её]т дождь|снегопад|ветер сегодня|погода завтра)/i.test(String(question || ""));
 }
 
 function extractWeatherCity(question) {
