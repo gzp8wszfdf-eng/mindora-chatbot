@@ -320,47 +320,11 @@ async function wavToOggOpus(wav) {
     ffmpeg.stdin.end(wav);
   });
 }
-  if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") {
-    throw new Error("TTS returned an unsupported WAV file");
-  }
-  let offset = 12, channels = 1, sampleRate = 24000, bits = 16, pcmOffset = -1, pcmLength = 0;
-  while (offset + 8 <= wav.length) {
-    const chunk = wav.toString("ascii", offset, offset + 4);
-    const size = wav.readUInt32LE(offset + 4);
-    if (chunk === "fmt " && size >= 16) {
-      channels = wav.readUInt16LE(offset + 10);
-      sampleRate = wav.readUInt32LE(offset + 12);
-      bits = wav.readUInt16LE(offset + 22);
-    }
-    if (chunk === "data") { pcmOffset = offset + 8; pcmLength = size; break; }
-    offset += 8 + size + (size % 2);
-  }
-  if (pcmOffset < 0 || bits !== 16 || (channels !== 1 && channels !== 2)) {
-    throw new Error("Unsupported TTS WAV audio format");
-  }
-  const encoder = new lamejs.Mp3Encoder(1, sampleRate, 64);
-  const samples = Math.floor(pcmLength / (2 * channels));
-  const output = [];
-  for (let start = 0; start < samples; start += 1152) {
-    const count = Math.min(1152, samples - start);
-    const mono = new Int16Array(count);
-    for (let i = 0; i < count; i++) {
-      const pos = pcmOffset + (start + i) * channels * 2;
-      const left = wav.readInt16LE(pos);
-      mono[i] = channels === 2 ? Math.round((left + wav.readInt16LE(pos + 2)) / 2) : left;
-    }
-    const encoded = encoder.encodeBuffer(mono);
-    if (encoded.length) output.push(Buffer.from(encoded));
-  }
-  const finalChunk = encoder.flush();
-  if (finalChunk.length) output.push(Buffer.from(finalChunk));
-  return Buffer.concat(output);
-}
 
 async function sendTelegramVoice(chatId, voice) {
   const form = new FormData();
   form.append("chat_id", String(chatId));
-  form.append("voice", new Blob([voice], { type: "audio/mpeg" }), "mindora.mp3");
+  form.append("voice", new Blob([voice], { type: "audio/ogg" }), "mindora.ogg");
   const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendVoice`, { method: "POST", body: form });
   if (!response.ok) throw new Error("Telegram sendVoice error: " + await response.text());
 }
