@@ -216,7 +216,11 @@ function extractMarketplaceQuery(question) {
 }
 
 
-async function describeTelegramPhoto(fileId, token) {
+async function describeTelegramPhoto(fileId) {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY is not configured");
+  }
+
   const tg = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
   if (!tg.ok) throw new Error("Telegram getFile HTTP " + tg.status);
   const tgData = await tg.json();
@@ -225,41 +229,39 @@ async function describeTelegramPhoto(fileId, token) {
   const photoResponse = await fetch(`https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${tgData.result.file_path}`);
   if (!photoResponse.ok) throw new Error("Telegram photo download HTTP " + photoResponse.status);
   const photoBuffer = Buffer.from(await photoResponse.arrayBuffer());
-  if (photoBuffer.length > 15 * 1024 * 1024) throw new Error("Photo exceeds GigaChat 15 MB limit");
+  if (photoBuffer.length > 15 * 1024 * 1024) throw new Error("Photo exceeds 15 MB limit");
 
-  const form = new FormData();
-  const mime = tgData.result.file_path.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
-  form.append("file", new Blob([photoBuffer], { type: mime }), "telegram-photo" + (mime === "image/png" ? ".png" : ".jpg"));
-  form.append("purpose", "general");
+  const filePath = tgData.result.file_path.toLowerCase();
+  const mime = filePath.endsWith(".png") ? "image/png" :
+    filePath.endsWith(".webp") ? "image/webp" : "image/jpeg";
 
-  const upload = await fetch("https://api.giga.chat/v1/files", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form
-  });
-  if (!upload.ok) throw new Error("GigaChat file upload " + upload.status + ": " + await upload.text());
-  const uploaded = await upload.json();
-
-  const vision = await fetch("https://api.giga.chat/v1/chat/completions", {
+  const vision = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      "x-goog-api-key": process.env.GEMINI_API_KEY,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: MODEL,
-      messages: [{
-        role: "user",
-        content: "Определи товар на фото для поиска в интернет-магазинах. Верни только короткий поисковый запрос: тип товара, бренд и модель если их можно уверенно прочитать. Не выдумывай бренд или модель. Если это не товар, кратко скажи, что изображено.",
-        attachments: [uploaded.id]
-      }],
-      temperature: 0.1
-    })
+      model: "gemini-3.8-flash",
+      input: [
+        {
+          type: "text",
+          text: "Определи товар на фото для поиска в интернет-магазине Wildberries. Верни только короткий поисковый запрос: тип товара, бренд и модель, если их можно уверенно прочитать. Не выдумывай бренд или модель. Если это не товар, кратко опиши, что изображено."
+        },
+        {
+          type: "image",
+          data: photoBuffer.toString("base64"),
+          mime_type: mime
+        }
+      ]
+    }),
+    signal: AbortSignal.timeout(60000)
   });
-  if (!vision.ok) throw new Error("GigaChat vision " + vision.status + ": " + await vision.text());
+
+  if (!vision.ok) throw new Error("Gemini vision " + vision.status + ": " + await vision.text());
   const visionData = await vision.json();
-  const description = visionData.choices?.[0]?.message?.content?.trim();
-  if (!description) throw new Error("GigaChat vision returned empty description");
+  const description = (visionData.output_text || "").trim();
+  if (!description) throw new Error("Gemini vision returned empty description");
   return description;
 }
 
@@ -506,7 +508,7 @@ const server = http.createServer((req, res) => {
         await sendTelegram(chatId, "Секундочку, рассматриваю фото 🔎");
         const token = await getGigaToken();
         const photo = message.photo[message.photo.length - 1];
-        const description = await describeTelegramPhoto(photo.file_id, token);
+        const description = await describeTelegramPhoto(photo.file_id);
         if (/не товар|человек|животн|пейзаж|не изображен товар/i.test(description)) {
           await sendTelegram(chatId, "На фото вижу: " + description + ". Пришли фото самого товара, и я попробую найти его ❤️");
         } else {
