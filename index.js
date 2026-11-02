@@ -235,41 +235,34 @@ async function getTelegramAudio(fileId) {
 }
 
 async function transcribeVoice(audio) {
-  if (!process.env.YANDEX_SPEECHKIT_API_KEY) {
-    throw new Error("YANDEX_SPEECHKIT_API_KEY is not configured");
-  }
-  if (audio.buffer.length > 1024 * 1024) {
-    throw new Error("Voice message is larger than the 1 MB limit for quick recognition");
-  }
-  if (audio.mime !== "audio/ogg") {
-    throw new Error("Please send a Telegram voice message in OGG format");
+  if (!process.env.GROQ_API_KEY) {
+    throw new Error("GROQ_API_KEY is not configured");
   }
 
-  const params = new URLSearchParams({
-    lang: "ru-RU",
-    format: "oggopus"
+  const form = new FormData();
+  const extension = audio.mime === "audio/mpeg" ? "mp3" :
+    audio.mime === "audio/mp4" ? "m4a" : "ogg";
+  form.append("file", new Blob([audio.buffer], { type: audio.mime }), "mindora-voice." + extension);
+  form.append("model", "whisper-large-v3-turbo");
+  form.append("language", "ru");
+  form.append("response_format", "json");
+  form.append("temperature", "0");
+
+  const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + process.env.GROQ_API_KEY },
+    body: form,
+    signal: AbortSignal.timeout(60000)
   });
-  const response = await fetch(
-    "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?" + params.toString(),
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Api-Key " + process.env.YANDEX_SPEECHKIT_API_KEY,
-        "Content-Type": "application/octet-stream"
-      },
-      body: audio.buffer,
-      signal: AbortSignal.timeout(45000)
-    }
-  );
 
   const raw = await response.text();
   if (!response.ok) {
-    throw new Error("Yandex SpeechKit STT HTTP " + response.status + ": " + raw.slice(0, 500));
+    throw new Error("Groq transcription HTTP " + response.status + ": " + raw.slice(0, 500));
   }
 
   const data = JSON.parse(raw);
-  const transcript = (data.result || "").trim();
-  if (!transcript) throw new Error("Yandex SpeechKit returned an empty transcript");
+  const transcript = (data.text || "").trim();
+  if (!transcript) throw new Error("Groq Whisper returned an empty transcript");
   return transcript;
 }
 
