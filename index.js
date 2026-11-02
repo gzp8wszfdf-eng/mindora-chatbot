@@ -247,7 +247,7 @@ async function describeTelegramPhoto(fileId, token) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: "GigaChat-Pro",
+      model: MODEL,
       messages: [{
         role: "user",
         content: "Определи товар на фото для поиска в интернет-магазинах. Верни только короткий поисковый запрос: тип товара, бренд и модель если их можно уверенно прочитать. Не выдумывай бренд или модель. Если это не товар, кратко скажи, что изображено.",
