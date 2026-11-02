@@ -267,33 +267,46 @@ async function transcribeVoice(audio) {
 }
 
 async function createVoiceReply(answer) {
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent", {
-    method: "POST",
-    headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{
+  if (!process.env.ELEVENLABS_API_KEY) {
+    throw new Error("ELEVENLABS_API_KEY is not configured");
+  }
+
+  // Bella is a female voice; eleven_multilingual_v2 supports Russian.
+  const voiceId = "EXAVITQu4vr4xnSDxMaL";
+  const response = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
+    {
+      method: "POST",
+      headers: {
+        "xi-api-key": process.env.ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg"
+      },
+      body: JSON.stringify({
         text: String(answer).slice(0, 2500),
-        speech_metadata: { style: "Тёплая, живая, дружелюбная женская речь на русском языке, с лёгкой игривостью и естественной интонацией." }
-      }] }],
-      generationConfig: {
-        responseModalities: ["AUDIO"],
-        speechConfig: {
-          voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } },
-          languageCode: "ru-RU"
+        model_id: "eleven_multilingual_v2",
+        voice_settings: {
+          stability: 0.48,
+          similarity_boost: 0.82,
+          style: 0.25,
+          use_speaker_boost: true
         }
-      }
-    }),
-    signal: AbortSignal.timeout(90000)
-  });
-  const raw = await response.text();
-  if (!response.ok) throw new Error("Gemini TTS HTTP " + response.status + ": " + raw.slice(0, 400));
-  const data = JSON.parse(raw);
-  const encoded = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data)?.inlineData?.data;
-  if (!encoded) throw new Error("Gemini TTS returned no audio");
-  return Buffer.from(encoded, "base64");
+      }),
+      signal: AbortSignal.timeout(90000)
+    }
+  );
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error("ElevenLabs TTS HTTP " + response.status + ": " + detail.slice(0, 500));
+  }
+
+  const audio = Buffer.from(await response.arrayBuffer());
+  if (!audio.length) throw new Error("ElevenLabs returned empty audio");
+  return audio;
 }
 
-async function wavToOggOpus(wav) {
+async function audioToOggOpus(audio) {
   const { spawn } = require("child_process");
   const ffmpegPath = require("ffmpeg-static");
   if (!ffmpegPath) throw new Error("FFmpeg binary is unavailable");
@@ -301,7 +314,7 @@ async function wavToOggOpus(wav) {
   return await new Promise((resolve, reject) => {
     const ffmpeg = spawn(ffmpegPath, [
       "-hide_banner", "-loglevel", "error",
-      "-f", "wav", "-i", "pipe:0",
+      "-i", "pipe:0",
       "-vn", "-c:a", "libopus", "-b:a", "32k",
       "-application", "voip", "-f", "ogg", "pipe:1"
     ]);
@@ -338,7 +351,7 @@ async function answerVoiceMessage(chatId, userId, fileId) {
   }
   const answer = await askGigaChat(userId, transcript);
   try {
-    await sendTelegramVoice(chatId, await wavToOggOpus(await createVoiceReply(answer)));
+    await sendTelegramVoice(chatId, await audioToOggOpus(await createVoiceReply(answer)));
   } catch (error) {
     console.error("Voice generation failed; sending text fallback:", error.message);
     await sendTelegram(chatId, answer);
