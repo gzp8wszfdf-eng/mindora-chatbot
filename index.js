@@ -318,13 +318,28 @@ async function editImageWithGemini(photo, instruction) {
   let data = {};
   try { data = JSON.parse(raw); } catch {}
   if (!response.ok) {
-    const detail = raw.toLowerCase();
-    if (response.status === 429 || detail.includes('quota') || detail.includes('resource_exhausted') || detail.includes('rate limit')) {
+    const apiError = data.error || {};
+    const safeMessage = String(apiError.message || raw.slice(0, 500)).slice(0, 500);
+    console.error('Gemini image edit API error:', JSON.stringify({
+      httpStatus: response.status,
+      apiStatus: apiError.status || null,
+      code: apiError.code || null,
+      message: safeMessage
+    }));
+    const detail = (String(apiError.status || '') + ' ' + safeMessage).toLowerCase();
+    const isQuota = response.status === 429 ||
+      apiError.status === 'RESOURCE_EXHAUSTED' ||
+      Number(apiError.code) === 429 ||
+      detail.includes('quota') ||
+      detail.includes('rate limit');
+    if (isQuota) {
       const error = new Error('GEMINI_LIMIT');
       error.code = 'GEMINI_LIMIT';
       throw error;
     }
-    throw new Error('Gemini image edit HTTP ' + response.status + ': ' + raw.slice(0, 500));
+    const error = new Error('Gemini image edit HTTP ' + response.status);
+    error.code = 'GEMINI_API_ERROR';
+    throw error;
   }
   let imageData = data.output_image?.data;
   let mime = data.output_image?.mime_type || 'image/jpeg';
