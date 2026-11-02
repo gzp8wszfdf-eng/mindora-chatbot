@@ -1240,7 +1240,58 @@ async function getWeatherReport(question) {
   const weatherResponse = await fetch("https://api.open-meteo.com/v1/forecast?" + params.toString(), {
     signal: AbortSignal.timeout(15000)
   });
-  if (!weatherResponse.ok) throw new Error("Weather forecast HTTP " + weatherResponse.status);
+  if (!weatherResponse.ok) {
+    console.warn("Open-Meteo forecast unavailable; using MET Norway fallback:", weatherResponse.status);
+    const fallbackUrl = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=" +
+      encodeURIComponent(place.latitude) + "&lon=" + encodeURIComponent(place.longitude);
+    const fallbackResponse = await fetch(fallbackUrl, {
+      headers: { "User-Agent": "MindoraTelegramBot/1.0 weather forecast" },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!fallbackResponse.ok) throw new Error("Weather providers failed: Open-Meteo " +
+      weatherResponse.status + ", MET Norway " + fallbackResponse.status);
+    const fallback = await fallbackResponse.json();
+    const series = fallback.properties?.timeseries || [];
+    if (!series.length) throw new Error("MET Norway returned no forecast data");
+    const now = series[0];
+    const details = now.data?.instant?.details || {};
+    const symbol = now.data?.next_1_hours?.summary?.symbol_code ||
+      now.data?.next_6_hours?.summary?.symbol_code || "";
+    const symbolText = (symbol.split("_")[0] || "").replace(/-/g, " ");
+    const conditions = {
+      clearsky: "ясно", fair: "преимущественно ясно", partlycloudy: "переменная облачность",
+      cloudy: "облачно", fog: "туман", lightrain: "небольшой дождь",
+      rain: "дождь", heavyrain: "сильный дождь", rainshowers: "ливень",
+      lightsnow: "небольшой снег", snow: "снег", heavysnow: "сильный снег",
+      sleet: "дождь со снегом", thunderstorm: "гроза"
+    };
+    const lines = [
+      "🌤 Погода: " + [place.name, place.admin1, place.country].filter(Boolean).join(", "),
+      "Сейчас: " + Math.round(details.air_temperature) + "°C, " +
+        (conditions[symbolText] || "условия по прогнозу") + ".",
+      "Ветер: " + Math.round(details.wind_speed ?? 0) + " м/с · влажность: " +
+        Math.round(details.relative_humidity ?? 0) + "%."
+    ];
+    const daily = new Map();
+    for (const item of series) {
+      const date = item.time.slice(0, 10);
+      if (!daily.has(date)) daily.set(date, []);
+      const d = item.data?.instant?.details;
+      if (d && Number.isFinite(d.air_temperature)) daily.get(date).push(d.air_temperature);
+    }
+    lines.push("", "Прогноз по доступным данным:");
+    let dayIndex = 0;
+    for (const [date, temps] of daily) {
+      if (dayIndex >= 3) break;
+      const label = dayIndex === 0 ? "Сегодня" : dayIndex === 1 ? "Завтра" :
+        new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long" }).format(new Date(date + "T12:00:00Z"));
+      lines.push(label + ": от " + Math.round(Math.min(...temps)) + " до " +
+        Math.round(Math.max(...temps)) + "°C.");
+      dayIndex++;
+    }
+    lines.push("", "Источник: MET Norway · прогноз может обновляться с задержкой.");
+    return lines.join("\\n");
+  }
   const data = await weatherResponse.json();
   const current = data.current;
   if (!current) throw new Error("Weather API returned no current conditions");
