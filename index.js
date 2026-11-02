@@ -202,7 +202,7 @@ async function extractMemories(token, question, oldMemories) {
 
 // Реальный поиск товаров Wildberries через публичный поисковый endpoint
 function isMarketplaceSearch(question) {
-  return /(найди|поищи|подбери|ищи|посоветуй).*(вб|wb|wildberries|товар|шампунь|телефон|наушник|крем|одежд)|(вб|wb|wildberries).*(найди|поищи|подбери|товар)/i.test(question);
+  return /(найди|поищи|подбери|ищи|посоветуй|закажи).*(вб|wb|wildberries|ozon|озон|яндекс маркет|мегамаркет|aliexpress|алиэкспресс|товар|шампунь|телефон|наушник|крем|одежд)|(вб|wb|wildberries|ozon|озон|яндекс маркет|мегамаркет|aliexpress|алиэкспресс).*(найди|поищи|подбери|товар)/i.test(question);
 }
 
 function extractMarketplaceQuery(question) {
@@ -282,55 +282,80 @@ async function describeTelegramPhoto(fileId) {
   return description;
 }
 
-async function searchWildberries(question) {
+function marketplaceTargets(query) {
+  const q = encodeURIComponent(query);
+  return [
+    { name: "Wildberries", domain: "wildberries.ru", search: "https://www.wildberries.ru/catalog/0/search.aspx?search=" + q },
+    { name: "Ozon", domain: "ozon.ru", search: "https://www.ozon.ru/search/?text=" + q },
+    { name: "Яндекс Маркет", domain: "market.yandex.ru", search: "https://market.yandex.ru/search?text=" + q },
+    { name: "Мегамаркет", domain: "megamarket.ru", search: "https://megamarket.ru/catalog/?q=" + q },
+    { name: "AliExpress", domain: "aliexpress.ru", search: "https://aliexpress.ru/wholesale?SearchText=" + q }
+  ];
+}
+
+function decodeSearchResultUrl(href) {
+  try {
+    const u = new URL(href, "https://html.duckduckgo.com");
+    const redirected = u.searchParams.get("uddg");
+    return redirected ? decodeURIComponent(redirected) : u.href;
+  } catch {
+    return "";
+  }
+}
+
+async function searchMarketplaceWeb(query, target) {
+  const searchQuery = "site:" + target.domain + " " + query;
+  const url = "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(searchQuery);
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; MindoraBot/1.0)",
+      "Accept": "text/html"
+    },
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!response.ok) throw new Error("Search HTTP " + response.status);
+  const html = await response.text();
+  const anchors = [...html.matchAll(/<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)];
+  const found = [];
+  for (const match of anchors) {
+    const link = decodeSearchResultUrl(match[1]);
+    const title = match[2].replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+    try {
+      const parsed = new URL(link);
+      if (parsed.hostname === target.domain || parsed.hostname.endsWith("." + target.domain)) {
+        if (title && !found.some(item => item.url === link)) found.push({ title, url: link });
+      }
+    } catch {}
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
+async function searchMarketplaces(question) {
   const query = extractMarketplaceQuery(question);
   if (!query || query.length < 2) {
-    return "Напиши, что именно ищем — например: «найди шампунь для сухих волос на WB» ❤️";
+    return "Напиши, что именно ищем — например: «найди шампунь для сухих волос» ❤️";
   }
-
-  const params = new URLSearchParams({
-    appType: "1", curr: "rub", dest: "-1257786", lang: "ru",
-    page: "1", query, resultset: "catalog", sort: "popular", spp: "30"
-  });
-
-  try {
-    const response = await fetch(
-      "https://search.wb.ru/exactmatch/ru/common/v18/search?" + params.toString(),
-      {
-        headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
-        signal: AbortSignal.timeout(12000)
-      }
-    );
-    if (!response.ok) throw new Error("Wildberries HTTP " + response.status);
-
-    const data = await response.json();
-    const products = data?.data?.products || [];
-    if (!products.length) {
-      return "По запросу «" + query + "» на Wildberries ничего не нашла. Попробуй изменить формулировку: https://www.wildberries.ru/catalog/0/search.aspx?search=" + encodeURIComponent(query);
+  const targets = marketplaceTargets(query);
+  const results = await Promise.all(targets.map(async target => {
+    try {
+      const items = await searchMarketplaceWeb(query, target);
+      return { ...target, items };
+    } catch (error) {
+      console.warn(target.name + " search unavailable:", error.message);
+      return { ...target, items: [] };
     }
-
-    const cards = products.slice(0, 5).map((p, i) => {
-      const rawPrice = p.salePriceU ?? p.priceU ?? p.sizes?.[0]?.price?.product;
-      const price = Number(rawPrice) / 100;
-      const rating = Number(p.rating);
-      const reviews = Number(p.feedbacks);
-      return [
-        (i + 1) + ". " + (p.name || "Товар"),
-        p.brand ? "Бренд: " + p.brand : "",
-        Number.isFinite(price) && price > 0 ? "Цена: " + Math.round(price).toLocaleString("ru-RU") + " ₽" : "Цена не указана",
-        Number.isFinite(rating) && rating > 0 ? "Рейтинг: " + rating.toFixed(1) + "/5" : "",
-        Number.isFinite(reviews) && reviews > 0 ? "Отзывы: " + reviews.toLocaleString("ru-RU") : "",
-        "https://www.wildberries.ru/catalog/" + p.id + "/detail.aspx"
-      ].filter(Boolean).join("\n");
-    });
-
-    return "🛍️ Нашла на Wildberries по запросу «" + query + "»:\n\n" +
-      cards.join("\n\n") +
-      "\n\nЦены и наличие могут меняться. Поиск использует неофициальный endpoint WB.";
-  } catch (error) {
-    console.error("Wildberries search error:", error.message);
-    return "Не получилось получить товары с Wildberries прямо сейчас 😔 Попробуй позже.\n\nПоиск WB: https://www.wildberries.ru/catalog/0/search.aspx?search=" + encodeURIComponent(query);
-  }
+  }));
+  const sections = results.map(target => {
+    const lines = target.items.length
+      ? target.items.map((item, i) => (i + 1) + ". " + item.title + "\n" + item.url)
+      : ["Прямые карточки сейчас не удалось получить.", "Поиск: " + target.search];
+    return "🛍️ " + target.name + "\n" + lines.join("\n");
+  });
+  const directCount = results.reduce((sum, target) => sum + target.items.length, 0);
+  return "Ищу «" + query + "» на маркетплейсах:\n\n" + sections.join("\n\n") +
+    (directCount ? "\n\nНашла ссылки на страницы товаров/результатов. Проверь цену и наличие на площадке ❤️" :
+      "\n\nПлощадки временно не отдали прямые результаты, поэтому оставила рабочие страницы поиска. ❤️");
 }
 
 // Личность Mindora
@@ -537,8 +562,8 @@ const server = http.createServer((req, res) => {
         if (/не товар|человек|животн|пейзаж|не изображен товар/i.test(description)) {
           await sendTelegram(chatId, "На фото вижу: " + description + ". Пришли фото самого товара, и я попробую найти его ❤️");
         } else {
-          await sendTelegram(chatId, "Похоже, это: " + description + ". Ищу товары на Wildberries 🔎");
-          const answer = await searchWildberries(description);
+          await sendTelegram(chatId, "Похоже, это: " + description + ". Ищу товары на маркетплейсах 🔎");
+          const answer = await searchMarketplaces(description);
           const fullAnswer = "На фото похоже на: " + description + "\n\n" + answer;
           try {
             await saveMessage(userId, "user", "[Фото товара] " + description);
@@ -554,7 +579,7 @@ const server = http.createServer((req, res) => {
           "Пока доступны команды /start и /reset ❤️"
         );
       } else if (isMarketplaceSearch(question)) {
-        const answer = await searchWildberries(question);
+        const answer = await searchMarketplaces(question);
 
         try {
           await saveMessage(userId, "user", question);
