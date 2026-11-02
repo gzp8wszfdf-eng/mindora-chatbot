@@ -251,7 +251,7 @@ async function describeTelegramPhoto(fileId) {
   });
 
   let vision;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       vision = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
         method: "POST",
@@ -260,11 +260,11 @@ async function describeTelegramPhoto(fileId) {
           "Content-Type": "application/json"
         },
         body: visionPayload,
-        signal: AbortSignal.timeout(90000)
+        signal: AbortSignal.timeout(25000)
       });
       if (vision.ok) break;
       const errorText = await vision.text();
-      if (![429, 500, 502, 503, 504].includes(vision.status) || attempt === 3) {
+      if (![429, 500, 502, 503, 504].includes(vision.status) || attempt === 2) {
         throw new Error("Gemini vision " + vision.status + ": " + errorText);
       }
       console.warn("Gemini temporarily unavailable; retry", attempt, vision.status);
@@ -272,7 +272,7 @@ async function describeTelegramPhoto(fileId) {
       if (attempt === 3 || !/TimeoutError|fetch failed|temporarily unavailable/i.test(String(error))) throw error;
       console.warn("Gemini request failed; retry", attempt, error.message);
     }
-    await new Promise(resolve => setTimeout(resolve, attempt * 2500));
+    await new Promise(resolve => setTimeout(resolve, 2000));
   }
 
   if (!vision?.ok) throw new Error("Gemini vision failed after retries");
@@ -522,12 +522,22 @@ const server = http.createServer((req, res) => {
           "Очистку истории добавим отдельно ❤️"
         );
       } else if (message.photo?.length) {
-        await sendTelegram(chatId, "Секундочку, рассматриваю фото 🔎");
+        await sendTelegram(chatId, "Фото получила ❤️ Сейчас попробую распознать товар.");
         const photo = message.photo[message.photo.length - 1];
-        const description = await describeTelegramPhoto(photo.file_id);
+        let description;
+        try {
+          description = await describeTelegramPhoto(photo.file_id);
+        } catch (visionError) {
+          console.error("Photo recognition failed:", visionError.message);
+          await sendTelegram(chatId, "Не получилось распознать фото 😔 Попробуй отправить его ещё раз, желательно чётче и поближе. Либо напиши название товара — я сразу попробую найти его на WB.");
+          res.writeHead(200);
+          res.end("OK");
+          return;
+        }
         if (/не товар|человек|животн|пейзаж|не изображен товар/i.test(description)) {
           await sendTelegram(chatId, "На фото вижу: " + description + ". Пришли фото самого товара, и я попробую найти его ❤️");
         } else {
+          await sendTelegram(chatId, "Похоже, это: " + description + ". Ищу товары на Wildberries 🔎");
           const answer = await searchWildberries(description);
           const fullAnswer = "На фото похоже на: " + description + "\n\n" + answer;
           try {
