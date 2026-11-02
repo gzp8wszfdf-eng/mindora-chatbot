@@ -304,7 +304,7 @@ async function createVoiceReply(answer) {
 }
 
 function wavToMp3(wav) {
-  const lamejs = require("lamejs");
+  const lamejs = require("@breezystack/lamejs");
   if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") {
     throw new Error("TTS returned an unsupported WAV file");
   }
