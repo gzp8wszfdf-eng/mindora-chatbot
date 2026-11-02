@@ -753,6 +753,72 @@ async function searchPublicWeb(query) {
   return [];
 }
 
+// Поиск конкретных песен в официальном каталоге Apple/iTunes.
+function isFullSongRequest(question) {
+  return /(найди|поищи|подбери|включи|скинь|пришли|отправь|хочу послушать|где послушать).{0,100}(песн|трек|композиц|музык)|^(песню|трек)\\s+/i.test(question) ||
+    /(песню|трек).{0,100}(найди|поищи|включи|скинь|пришли|отправь)/i.test(question);
+}
+
+function extractSongQuery(question) {
+  return question
+    .replace(/^\\s*(медора|миндора)[,!]?\\s*/i, "")
+    .replace(/^\\s*(найди|поищи|подбери|включи|скинь|пришли|отправь)\\s*/i, "")
+    .replace(/^\\s*(мне\\s+)?(песню|песн[юи]|трек|композицию)\\s*/i, "")
+    .replace(/\\b(пожалуйста|мне|полную версию|целиком|в телеграм)\\b/gi, "")
+    .replace(/[!?.,]+/g, " ")
+    .replace(/\\s+/g, " ")
+    .trim();
+}
+
+async function searchFullSongs(question) {
+  const query = extractSongQuery(question);
+  if (!query || query.length < 2) {
+    return "Напиши название песни или исполнителя — найду нужный трек ❤️";
+  }
+
+  let data = null;
+  let usedCountry = "";
+  for (const country of ["ru", "de", "us"]) {
+    try {
+      const url = "https://itunes.apple.com/search?term=" +
+        encodeURIComponent(query) + "&entity=song&limit=5&country=" + country;
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(12000)
+      });
+      if (!response.ok) continue;
+      const candidate = await response.json();
+      if (Array.isArray(candidate.results) && candidate.results.length) {
+        data = candidate;
+        usedCountry = country;
+        break;
+      }
+    } catch (error) {
+      console.warn("Apple music catalog search failed (" + country + "):", error.message);
+    }
+  }
+
+  const tracks = (data?.results || [])
+    .filter(track => track.trackName && track.artistName && track.trackViewUrl)
+    .slice(0, 5);
+
+  if (!tracks.length) {
+    return "Не нашла этот трек в музыкальном каталоге 😔 Попробуй написать точнее — название и исполнителя.";
+  }
+
+  const lines = tracks.map((track, index) => {
+    const title = cleanSearchText(track.trackName);
+    const artist = cleanSearchText(track.artistName);
+    const album = track.collectionName ? "\\nАльбом: " + cleanSearchText(track.collectionName) : "";
+    return (index + 1) + ". " + title + " — " + artist + album +
+      "\\nПолная версия: " + track.trackViewUrl;
+  });
+
+  return "🎵 Нашла варианты по запросу «" + query + "»:\\n\\n" +
+    lines.join("\\n\\n") +
+    "\\n\\nОткрой ссылку, чтобы слушать полную версию в музыкальном сервисе. Сам файл песни я могу переслать только если правообладатель разрешает его распространение ❤️";
+}
+
 async function searchMediaAndWeb(question) {
   const query = extractMediaQuery(question);
   if (!query || query.length < 2) {
@@ -1013,6 +1079,15 @@ const server = http.createServer((req, res) => {
             chatId,
             "Пока доступны команды /start и /reset ❤️"
           );
+        } else if (isFullSongRequest(question)) {
+          const answer = await searchFullSongs(question);
+          try {
+            await saveMessage(userId, "user", question);
+            await saveMessage(userId, "assistant", answer);
+          } catch (error) {
+            console.error("Song search history save error:", error.message);
+          }
+          await sendTelegram(chatId, answer);
         } else if (isMediaSearch(question)) {
           const answer = await searchMediaAndWeb(question);
           try {
