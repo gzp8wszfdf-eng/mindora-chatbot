@@ -235,45 +235,42 @@ async function getTelegramAudio(fileId) {
 }
 
 async function transcribeVoice(audio) {
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
-  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
-  let lastError;
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [
-            { text: "Расшифруй голосовое сообщение на русском языке. Верни только слова пользователя, без пояснений." },
-            { inlineData: { mimeType: audio.mime, data: audio.buffer.toString("base64") } }
-          ] }],
-          generationConfig: { temperature: 0 }
-        }),
-        signal: AbortSignal.timeout(90000)
-      });
-      const raw = await response.text();
-      if (!response.ok) {
-        const error = new Error("Gemini transcription HTTP " + response.status + ": " + raw.slice(0, 400));
-        if (![429, 500, 502, 503, 504].includes(response.status)) throw error;
-        lastError = error;
-      } else {
-        const data = JSON.parse(raw);
-        const transcript = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
-        if (transcript) return transcript;
-        throw new Error("Gemini returned an empty transcript");
-      }
-    } catch (error) {
-      lastError = error;
-      if (!/TimeoutError|AbortError|fetch failed|Gemini transcription HTTP (429|500|502|503|504)/i.test(String(error))) throw error;
-    }
-    if (attempt < 4) {
-      const delay = attempt * 2500;
-      console.warn("Gemini transcription temporarily unavailable; retry", attempt, "in", delay, "ms:", lastError?.message);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
+  if (!process.env.YANDEX_SPEECHKIT_API_KEY) {
+    throw new Error("YANDEX_SPEECHKIT_API_KEY is not configured");
   }
-  throw new Error("Gemini transcription failed after retries: " + (lastError?.message || "unknown error"));
+  if (audio.buffer.length > 1024 * 1024) {
+    throw new Error("Voice message is larger than the 1 MB limit for quick recognition");
+  }
+  if (audio.mime !== "audio/ogg") {
+    throw new Error("Please send a Telegram voice message in OGG format");
+  }
+
+  const params = new URLSearchParams({
+    lang: "ru-RU",
+    format: "oggopus"
+  });
+  const response = await fetch(
+    "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize?" + params.toString(),
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Api-Key " + process.env.YANDEX_SPEECHKIT_API_KEY,
+        "Content-Type": "application/octet-stream"
+      },
+      body: audio.buffer,
+      signal: AbortSignal.timeout(45000)
+    }
+  );
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error("Yandex SpeechKit STT HTTP " + response.status + ": " + raw.slice(0, 500));
+  }
+
+  const data = JSON.parse(raw);
+  const transcript = (data.result || "").trim();
+  if (!transcript) throw new Error("Yandex SpeechKit returned an empty transcript");
+  return transcript;
 }
 
 async function createVoiceReply(answer) {
