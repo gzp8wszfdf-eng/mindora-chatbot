@@ -235,22 +235,45 @@ async function getTelegramAudio(fileId) {
 }
 
 async function transcribeVoice(audio) {
-  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
-    method: "POST",
-    headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [
-        { text: "Расшифруй голосовое сообщение на русском языке. Верни только слова пользователя, без пояснений." },
-        { inlineData: { mimeType: audio.mime, data: audio.buffer.toString("base64") } }
-      ] }],
-      generationConfig: { temperature: 0 }
-    }),
-    signal: AbortSignal.timeout(45000)
-  });
-  const raw = await response.text();
-  if (!response.ok) throw new Error("Gemini transcription HTTP " + response.status + ": " + raw.slice(0, 400));
-  const data = JSON.parse(raw);
-  return (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+  let lastError;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "x-goog-api-key": process.env.GEMINI_API_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [
+            { text: "Расшифруй голосовое сообщение на русском языке. Верни только слова пользователя, без пояснений." },
+            { inlineData: { mimeType: audio.mime, data: audio.buffer.toString("base64") } }
+          ] }],
+          generationConfig: { temperature: 0 }
+        }),
+        signal: AbortSignal.timeout(90000)
+      });
+      const raw = await response.text();
+      if (!response.ok) {
+        const error = new Error("Gemini transcription HTTP " + response.status + ": " + raw.slice(0, 400));
+        if (![429, 500, 502, 503, 504].includes(response.status)) throw error;
+        lastError = error;
+      } else {
+        const data = JSON.parse(raw);
+        const transcript = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
+        if (transcript) return transcript;
+        throw new Error("Gemini returned an empty transcript");
+      }
+    } catch (error) {
+      lastError = error;
+      if (!/TimeoutError|AbortError|fetch failed|Gemini transcription HTTP (429|500|502|503|504)/i.test(String(error))) throw error;
+    }
+    if (attempt < 4) {
+      const delay = attempt * 2500;
+      console.warn("Gemini transcription temporarily unavailable; retry", attempt, "in", delay, "ms:", lastError?.message);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw new Error("Gemini transcription failed after retries: " + (lastError?.message || "unknown error"));
 }
 
 async function createVoiceReply(answer) {
