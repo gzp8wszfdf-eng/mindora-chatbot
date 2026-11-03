@@ -1691,7 +1691,7 @@ if (pendingMemoryDeletions.has(String(userId)) && /^(да|давай|подтв�
         } else if (question === "/start") {
           await sendTelegram(
             chatId,
-            "Привет! Я Mandora 2.1 ❤️\n\nХочешь узнать, что я о тебе помню? Просто спроси: «Ты меня помнишь?»\n\nА ещё я умею общаться голосом, распознавать фото и искать товары на маркетплейсах. "
+            "Привет! Я Mandora 2.1 ❤️\n\nХочешь узнать, что я о тебе помню? Просто спроси: «Ты меня помнишь?»\n\nА ещё я умею общаться голосом, распознавать фото, создавать изображения по описанию командой /image и искать товары на маркетплейсах. "
           );
         } else if (question === "/reset") {
           await sendTelegram(
@@ -1778,7 +1778,7 @@ if (pendingMemoryDeletions.has(String(userId)) && /^(да|давай|подтв�
         } else if (question.startsWith("/")) {
           await sendTelegram(
             chatId,
-            "Команды: /start, /memory, /remember текст, /forget фраза ❤️"
+            "Команды: /start, /image описание, /memory, /remember текст, /forget фраза ❤️"
           );
         } else if (isLyricIdentificationRequest(question)) {
           const answer = await identifySongByLyrics(chatId, question);
