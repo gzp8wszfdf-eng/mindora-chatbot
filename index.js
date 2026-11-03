@@ -616,6 +616,89 @@ async function editImageWithGemini(photo, instruction) {
   return { buffer: Buffer.from(imageData, 'base64'), mime };
 }
 
+async function generateImageWithGemini(prompt) {
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is not configured");
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/interactions", {
+    method: "POST",
+    headers: {
+      "x-goog-api-key": process.env.GEMINI_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gemini-nano-banana-2.1",
+      input: [{ type: "text", text: "Создай изображение по описанию пользователя. Не добавляй пояснений или текста вне изображения. Описание: " + prompt }],
+      response_format: { type: "image", mime_type: "image/jpeg", image_size: "1K" }
+    }),
+    signal: AbortSignal.timeout(120000)
+  });
+  const raw = await response.text();
+  let data = {};
+  try { data = JSON.parse(raw); } catch {}
+  if (!response.ok) {
+    const apiError = data.error || {};
+    const detail = (String(apiError.status || "") + " " + String(apiError.message || raw)).toLowerCase();
+    const isQuota = response.status === 429 || apiError.status === "RESOURCE_EXHAUSTED" ||
+      Number(apiError.code) === 429 || detail.includes("quota") || detail.includes("rate limit");
+    const error = new Error(isQuota ? "GEMINI_LIMIT" : "Gemini image generation HTTP " + response.status);
+    if (isQuota) error.code = "GEMINI_LIMIT";
+    throw error;
+  }
+  let imageData = data.output_image?.data;
+  let mime = data.output_image?.mime_type || "image/jpeg";
+  if (!imageData && Array.isArray(data.steps)) {
+    for (const step of data.steps) {
+      for (const block of (step.content || [])) {
+        if (block.type === "image" && block.data) {
+          imageData = block.data;
+          mime = block.mime_type || mime;
+        }
+      }
+    }
+  }
+  if (!imageData) throw new Error("Gemini returned no generated image");
+  return { buffer: Buffer.from(imageData, "base64"), mime };
+}
+
+function extractImagePrompt(question) {
+  return String(question || "")
+    .replace(/^\\s*(?:\\/image(?:@\\w+)?|нарисуй|сгенерируй(?:\\s+мне)?(?:\\s+(?:фото|картинку|изображение))?|создай(?:\\s+мне)?\\s+(?:фото|картинку|изображение)|сделай(?:\\s+мне)?\\s+(?:картинку|изображение))\\s*/i, "")
+    .trim();
+}
+
+function isImageGenerationRequest(question) {
+  return /^\\s*(?:\\/image(?:@\\w+)?(?:\\s|$)|нарисуй\\b|сгенерируй\\b|создай(?:\\s+мне)?\\s+(?:фото|картинку|изображение)\\b|сделай(?:\\s+мне)?\\s+(?:картинку|изображение)\\b)/i.test(String(question || ""));
+}
+
+async function handleImageGeneration(chatId, userId, question) {
+  const prompt = extractImagePrompt(question);
+  if (!prompt || prompt.length < 3) {
+    await sendTelegram(chatId, "Опиши, какую картинку создать ❤️ Например: /image уютный домик в горах на закате, реалистичная фотография.");
+    return;
+  }
+  if (prompt.length > 1500) {
+    await sendTelegram(chatId, "Описание слишком длинное. Сократи его до 1500 символов ❤️");
+    return;
+  }
+  await sendTelegram(chatId, "Придумываю и создаю изображение ✨ Это может занять до пары минут.");
+  try {
+    const generated = await generateImageWithGemini(prompt);
+    await sendTelegramPhoto(chatId, generated, "Готово! ✨ Хочешь что-нибудь изменить?");
+    try {
+      await saveMessage(userId, "user", "[Генерация изображения] " + prompt);
+      await saveMessage(userId, "assistant", "[Отправлено сгенерированное изображение]");
+    } catch (error) {
+      console.error("Image generation history save error:", error.message);
+    }
+  } catch (error) {
+    console.error("Image generation failed:", error.message);
+    if (error.code === "GEMINI_LIMIT") {
+      await sendTelegram(chatId, "Похоже, достигнут лимит генерации Gemini или сервис временно ограничил запросы. Попробуй позже. Возможная стоимость зависит от тарифа Google API ❤️");
+    } else {
+      await sendTelegram(chatId, "Не получилось создать изображение 😔 Проверь доступность Gemini и попробуй ещё раз позже.");
+    }
+  }
+}
+
 async function sendTelegramPhoto(chatId, photo, caption) {
   const form = new FormData();
   form.append('chat_id', String(chatId));
@@ -1615,6 +1698,8 @@ if (pendingMemoryDeletions.has(String(userId)) && /^(да|давай|подтв�
             chatId,
             "Очистку истории добавим отдельно ❤️"
           );
+        } else if (isImageGenerationRequest(question)) {
+          await handleImageGeneration(chatId, userId, question);
         } else if (message.video) {
           try {
             await editTelegramVideo(chatId, message.video.file_id, question || "Улучши качество и подготовь видео к публикации");
