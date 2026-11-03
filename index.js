@@ -89,6 +89,25 @@ async function saveMemory(userId, fact) {
   });
 }
 
+async function deleteMemory(userId, exactMemory) {
+  const path = "memories?user_id=eq." + encodeURIComponent(String(userId)) +
+    "&memory=eq." + encodeURIComponent(exactMemory);
+  await supabaseRequest(path, {
+    method: "DELETE",
+    headers: { Prefer: "return=minimal" }
+  });
+}
+
+async function listMemories(userId) {
+  const path = "memories?user_id=eq." + encodeURIComponent(String(userId)) +
+    "&select=memory&order=created_at.asc&limit=100";
+  const rows = await supabaseRequest(path);
+  return rows
+    .map(row => row.memory)
+    .filter(value => typeof value === "string" &&
+      (value.startsWith("Факт: ") || value.startsWith("Стиль: ")));
+}
+
 async function getHistory(userId) {
   const path =
     `conversations?user_id=eq.${encodeURIComponent(userId)}` +
@@ -1534,10 +1553,50 @@ const server = http.createServer((req, res) => {
         const userId = message.from?.id || chatId;
         const question = (message.text || message.caption || "").trim();
 
-        if (question === "/start") {
+        if (/^\/memory(?:@\w+)?$/i.test(question)) {
+          const memories = await listMemories(userId);
+          const visible = memories.map((value, index) => {
+            const fact = value.startsWith("Стиль: ") ? "Стиль общения: " + value.slice(7) : value.slice(6);
+            return (index + 1) + ". " + fact;
+          });
+          const answer = visible.length
+            ? "🧠 Что я запомнила о тебе:\n\n" + visible.join("\n")
+            : "Пока моя память пуста. Можешь добавить факт командой /remember например: /remember Я люблю путешествовать ❤️";
+          await sendTelegram(chatId, answer);
+        } else if (/^\/remember(?:@\w+)?(?:\s|$)/i.test(question)) {
+          const fact = question.replace(/^\/remember(?:@\w+)?\s*/i, "").trim();
+          if (fact.length < 3) {
+            await sendTelegram(chatId, "Напиши, что именно запомнить. Например: /remember Я люблю фантастику ❤️");
+          } else if (/(парол[ья]|password|токен|api[_ -]?key|секретн[ыйое] ключ|номер карт[ыы]|cvv|cvc)/i.test(fact)) {
+            await sendTelegram(chatId, "Я не буду сохранять пароли, ключи и платёжные секреты. ❤️");
+          } else {
+            const current = await listMemories(userId);
+            const normalized = value => String(value).toLocaleLowerCase("ru-RU").replace(/[ё]/g, "е").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+            const stored = current.some(item => normalized(item.replace(/^(Факт: |Стиль: )/, "")) === normalized(fact));
+            if (stored) {
+              await sendTelegram(chatId, "Это уже есть в моей памяти 🧠❤️");
+            } else {
+              await saveMemory(userId, fact);
+              await sendTelegram(chatId, "Запомнила ❤️ Проверить можно командой /memory.");
+            }
+          }
+        } else if (/^\/forget(?:@\w+)?(?:\s|$)/i.test(question)) {
+          const phrase = question.replace(/^\/forget(?:@\w+)?\s*/i, "").trim();
+          if (phrase.length < 2) {
+            await sendTelegram(chatId, "Укажи фразу для удаления. Например: /forget фантастика");
+          } else {
+            const current = await listMemories(userId);
+            const needle = phrase.toLocaleLowerCase("ru-RU").replace(/[ё]/g, "е");
+            const matches = current.filter(item => item.toLocaleLowerCase("ru-RU").replace(/[ё]/g, "е").includes(needle));
+            for (const item of matches) await deleteMemory(userId, item);
+            await sendTelegram(chatId, matches.length
+              ? "Удалила " + matches.length + " воспоминаний по запросу «" + phrase.slice(0, 80) + "». ❤️"
+              : "Не нашла воспоминаний с такой фразой. Ничего не удаляла. ❤️");
+          }
+        } else if (question === "/start") {
           await sendTelegram(
             chatId,
-            "Привет! Я Mandora 2.1 ❤️ Я помню наши разговоры и теперь могу помогать искать товары на Wildberries и Ozon!"
+            "Привет! Я Mandora 2.1 ❤️\n\nКоманды памяти:\n/memory — посмотреть, что я помню\n/remember текст — сохранить факт\n/forget фраза — удалить совпадающие воспоминания\n\nА ещё я умею общаться голосом, распознавать фото и искать товары на маркетплейсах. "
           );
         } else if (question === "/reset") {
           await sendTelegram(
@@ -1622,7 +1681,7 @@ const server = http.createServer((req, res) => {
         } else if (question.startsWith("/")) {
           await sendTelegram(
             chatId,
-            "Пока доступны команды /start и /reset ❤️"
+            "Команды: /start, /memory, /remember текст, /forget фраза ❤️"
           );
         } else if (isLyricIdentificationRequest(question)) {
           const answer = await identifySongByLyrics(chatId, question);
