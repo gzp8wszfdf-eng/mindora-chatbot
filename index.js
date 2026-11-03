@@ -501,6 +501,7 @@ async function describeTelegramPhoto(fileId) {
 
 
 const pendingEditPhotos = new Map();
+const pendingMemoryDeletions = new Map();
 
 async function downloadTelegramPhoto(fileId) {
   const tg = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
@@ -1553,7 +1554,32 @@ const server = http.createServer((req, res) => {
         const userId = message.from?.id || chatId;
         const question = (message.text || message.caption || "").trim();
 
-if (/^(?:а\s*)?(?:ты\s+меня\s+помнишь|помнишь\s+меня|что\s+ты\s+(?:обо\s+мне\s+)?помнишь|что\s+помнишь\s+обо\s+мне|что\s+ты\s+запомнила(?:\s+обо\s+мне)?)\s*[?!.,]*$/i.test(question)) {
+if (pendingMemoryDeletions.has(String(userId)) && /^(да|давай|подтверждаю|удаляй|верно)$/i.test(question)) {
+          const pending = pendingMemoryDeletions.get(String(userId));
+          pendingMemoryDeletions.delete(String(userId));
+          for (const item of pending.matches) await deleteMemory(userId, item);
+          await sendTelegram(chatId, "Готово. Удалила выбранные воспоминания из моей памяти ❤️");
+        } else if (pendingMemoryDeletions.has(String(userId)) && /^(нет|отмена|не надо|оставь)$/i.test(question)) {
+          pendingMemoryDeletions.delete(String(userId));
+          await sendTelegram(chatId, "Хорошо, ничего не удаляла. ❤️");
+        } else if (pendingMemoryDeletions.has(String(userId))) {
+          await sendTelegram(chatId, "Я жду подтверждения: ответь «да» для удаления или «нет» для отмены. ❤️");
+        } else if (/^(забудь|удали из памяти|не запоминай|не вспоминай)\\b/i.test(question)) {
+          const memories = await listMemories(userId);
+          const phrase = question.replace(/^(забудь|удали из памяти|не запоминай|не вспоминай)\\s*/i, "").trim();
+          const tokens = phrase.toLocaleLowerCase("ru-RU").replace(/[ё]/g, "е").split(/[^\\p{L}\\p{N}]+/u).filter(word => word.length >= 4);
+          const matches = memories.filter(item => {
+            const normalized = item.toLocaleLowerCase("ru-RU").replace(/[ё]/g, "е");
+            return tokens.length ? tokens.some(word => normalized.includes(word)) : memories.length === 1;
+          });
+          if (!matches.length) {
+            await sendTelegram(chatId, "Не нашла в сохранённой памяти подходящего воспоминания. Ничего не удаляла. ❤️");
+          } else {
+            pendingMemoryDeletions.set(String(userId), { matches });
+            const preview = matches.map(item => "• " + item.replace(/^(Факт: |Стиль: )/, "")).join("\\n");
+            await sendTelegram(chatId, "Хочу убедиться, что правильно тебя поняла. Ты просишь забыть:\\n\\n" + preview + "\\n\\nУдалить это из памяти? Ответь «да» или «нет».");
+          }
+        } else if (/^(?:а\s*)?(?:ты\s+меня\s+помнишь|помнишь\s+меня|что\s+ты\s+(?:обо\s+мне\s+)?помнишь|что\s+помнишь\s+обо\s+мне|что\s+ты\s+запомнила(?:\s+обо\s+мне)?)\s*[?!.,]*$/i.test(question)) {
           const memories = await listMemories(userId);
           const visible = memories.map((value, index) => {
             const fact = value.startsWith("Стиль: ") ? "Стиль общения: " + value.slice(7) : value.slice(6);
