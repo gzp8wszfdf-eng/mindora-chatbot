@@ -1,1 +1,1 @@
-# mindora-chatbot
+# mandora-chatbot
