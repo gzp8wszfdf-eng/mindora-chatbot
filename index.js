@@ -717,9 +717,16 @@ function extractImagePrompt(question) {
   return prompt;
 }
 
+function isProgrammingRequest(question) {
+  const q = String(question || "").trim().toLocaleLowerCase("ru-RU");
+  if (/^\/image\b/.test(q)) return false;
+  return /(программир|напиши код|написать код|созда[йи].{0,60}(игр|сайт|приложени|программ|бот|проект)|сдела[йи].{0,60}(игр|сайт|приложени|программ|бот|проект)|разработай|сверстай|javascript|typescript|python|html|css|sql|исправи.*код|ошибк.*код|разбер.*код|скрипт|алгоритм|api|баз.*данных|git(hub)?)/i.test(q);
+}
+
 function isImageGenerationRequest(question) {
   const q = String(question || "").trim().toLocaleLowerCase("ru-RU");
   if (q.startsWith("/image")) return true;
+  if (isProgrammingRequest(q)) return false;
   const starts = [
     "нарисуй ", "сгенерируй ", "создай ", "сделай ", "сделай мне ",
     "можешь нарисовать ", "можешь создать ", "можешь сгенерировать ",
