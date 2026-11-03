@@ -1553,7 +1553,17 @@ const server = http.createServer((req, res) => {
         const userId = message.from?.id || chatId;
         const question = (message.text || message.caption || "").trim();
 
-        if (/^\/memory(?:@\w+)?$/i.test(question)) {
+if (/^(?:а\s*)?(?:ты\s+меня\s+помнишь|помнишь\s+меня|что\s+ты\s+(?:обо\s+мне\s+)?помнишь|что\s+помнишь\s+обо\s+мне|что\s+ты\s+запомнила(?:\s+обо\s+мне)?)\s*[?!.,]*$/i.test(question)) {
+          const memories = await listMemories(userId);
+          const visible = memories.map((value, index) => {
+            const fact = value.startsWith("Стиль: ") ? "Стиль общения: " + value.slice(7) : value.slice(6);
+            return (index + 1) + ". " + fact;
+          });
+          const answer = visible.length
+            ? "Конечно, помню ❤️ Вот что я сохранила о тебе:\\n\\n" + visible.join("\\n")
+            : "Пока я ещё мало что о тебе запомнила ❤️ Просто общайся со мной как обычно — я буду постепенно сохранять важные устойчивые вещи, которые ты рассказываешь.";
+          await sendTelegram(chatId, answer);
+        } else if (/^\/memory(?:@\w+)?$/i.test(question)) {
           const memories = await listMemories(userId);
           const visible = memories.map((value, index) => {
             const fact = value.startsWith("Стиль: ") ? "Стиль общения: " + value.slice(7) : value.slice(6);
@@ -1596,7 +1606,7 @@ const server = http.createServer((req, res) => {
         } else if (question === "/start") {
           await sendTelegram(
             chatId,
-            "Привет! Я Mandora 2.1 ❤️\n\nКоманды памяти:\n/memory — посмотреть, что я помню\n/remember текст — сохранить факт\n/forget фраза — удалить совпадающие воспоминания\n\nА ещё я умею общаться голосом, распознавать фото и искать товары на маркетплейсах. "
+            "Привет! Я Mandora 2.1 ❤️\n\nХочешь узнать, что я о тебе помню? Просто спроси: «Ты меня помнишь?»\n\nА ещё я умею общаться голосом, распознавать фото и искать товары на маркетплейсах. "
           );
         } else if (question === "/reset") {
           await sendTelegram(
