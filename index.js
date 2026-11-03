@@ -118,7 +118,7 @@ async function saveMessage(userId, role, content) {
   });
 }
 
-async function extractMemories(token, question, oldMemories) {
+async function extractMemories(token, question, oldMemories, recentHistory = []) {
   const response = await fetch(
     "https://api.giga.chat/v1/chat/completions",
     {
@@ -129,44 +129,47 @@ async function extractMemories(token, question, oldMemories) {
       },
       body: JSON.stringify({
         model: MODEL,
+        temperature: 0.1,
         messages: [
           {
             role: "system",
-            content: `Ты извлекаешь долговременные факты о пользователе.
+            content: `Ты — модуль долговременной памяти Mandora. Твоя задача — извлекать только полезные, устойчивые сведения о пользователе.
 
-Сохраняй только устойчивые сведения, которые пользователь явно сообщил:
-- имя и обращение;
-- интересы, предпочтения, долгосрочные цели и важные проекты;
-- явные предпочтения к стилю общения Mandora: насколько дерзко шутить, какие темы и форматы нравятся или не нравятся, какие обращения использовать.
+СОХРАНЯЙ:
+- явно названное имя, предпочитаемое обращение и язык;
+- устойчивые интересы, хобби, цели, проекты и долгосрочные планы;
+- явно выраженные предпочтения и запреты в общении;
+- важные постоянные обстоятельства, только если пользователь сам прямо сообщил о них и они действительно нужны для будущей помощи.
 
-Если пользователь явно просит изменить стиль общения, сохрани это отдельной строкой с префиксом "Стиль общения:".
-Не делай вывод о предпочтениях по одному случайному сообщению. Не сохраняй собственные догадки о характере пользователя.
+ПРАВИЛА:
+- Анализируй последнее сообщение вместе с недавним контекстом, чтобы понимать местоимения и продолжение темы.
+- Сохраняй только сведения, прямо подтверждённые словами пользователя. Не превращай предположения, шутки, гипотезы и вопросы в факты.
+- Не сохраняй разовые намерения, временные планы, случайные запросы и сведения, которые быстро устаревают.
+- Не дублируй существующую память. Если пользователь явно исправил ранее сохранённый факт, верни обновлённую формулировку вместо старой.
+- Формулируй каждый факт кратко, понятно и без домыслов. Один факт — одна строка.
+- Не сохраняй пароли, токены, ключи, платёжные реквизиты, медицинские сведения, финансовые сведения и другие чувствительные персональные данные.
+- Не сохраняй содержание переписки третьих лиц, если это не устойчивый контекст проекта и пользователь явно не просит его запомнить.
+- Если нет нового устойчивого факта или явного исправления — верни [].
 
-Не сохраняй:
-- случайные вопросы и временные события;
-- предположения и неподтверждённые выводы;
-- пароли, ключи и другие секреты;
-- медицинские и финансовые сведения;
-- другие чувствительные данные.
-
-Не добавляй дубликаты и не переписывай уже сохранённые факты без явной причины.
-Если сохранять нечего, верни [].
-Верни только JSON-массив строк. Максимум 3 коротких факта.`
+ФОРМАТ:
+Верни только корректный JSON-массив строк без Markdown. Максимум 3 факта, каждый не длиннее 200 символов.`
           },
           {
             role: "user",
             content: JSON.stringify({
-              existing_facts: oldMemories,
-              new_user_message: question
+              existing_memories: oldMemories,
+              recent_conversation: recentHistory.slice(-8),
+              latest_user_message: question
             })
           }
         ]
-      })
+      }),
+      signal: AbortSignal.timeout(30000)
     }
   );
 
   if (!response.ok) {
-    throw new Error("Memory extraction error: " + await response.text());
+    throw new Error("Memory extraction error: " + response.status + ": " + await response.text());
   }
 
   const data = await response.json();
@@ -174,31 +177,39 @@ async function extractMemories(token, question, oldMemories) {
 
   try {
     const cleaned = content
-      .replace(/```json/gi, "")
-      .replace(/```/g, "")
+      .replace(/\`\`\`json/gi, "")
+      .replace(/\`\`\`/g, "")
       .trim();
-
     const start = cleaned.indexOf("[");
     const end = cleaned.lastIndexOf("]");
-
-    if (start < 0 || end < 0) return [];
+    if (start < 0 || end < start) return [];
 
     const facts = JSON.parse(cleaned.slice(start, end + 1));
-
     if (!Array.isArray(facts)) return [];
 
-    const existing = new Set(
-      oldMemories.map(f => f.toLowerCase().trim())
-    );
+    const normalize = value => String(value)
+      .toLocaleLowerCase("ru-RU")
+      .replace(/[ё]/g, "е")
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim();
+
+    const existing = new Set(oldMemories.map(normalize));
+    const seen = new Set();
 
     return facts
       .filter(f => typeof f === "string")
-      .map(f => f.trim())
+      .map(f => f.replace(/\s+/g, " ").trim())
       .filter(f => f.length > 2 && f.length <= 200)
-      .filter(f => !existing.has(f.toLowerCase()))
+      .filter(f => !/[\u0000-\u001f]/.test(f))
+      .filter(f => {
+        const key = normalize(f);
+        if (!key || existing.has(key) || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
       .slice(0, 3);
-  } catch {
-    console.error("Could not parse memory facts");
+  } catch (error) {
+    console.error("Could not parse memory facts:", error.message);
     return [];
   }
 }
@@ -1103,7 +1114,7 @@ async function askGigaChat(userId, question) {
 
   if (token) {
     try {
-      const newFacts = await extractMemories(token, question, memories);
+      const newFacts = await extractMemories(token, question, memories, history);
       for (const fact of newFacts) await saveMemory(userId, fact);
     } catch (error) {
       console.error("Memory update error:", error.message);
