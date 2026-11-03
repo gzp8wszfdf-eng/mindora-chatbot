@@ -659,6 +659,39 @@ async function generateImageWithGemini(prompt) {
   return { buffer: Buffer.from(imageData, "base64"), mime };
 }
 
+async function generateImageWithCloudflare(prompt) {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!accountId || !apiToken) {
+    throw new Error("Cloudflare Workers AI credentials are not configured");
+  }
+
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/black-forest-labs/flux-1-schnell`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ prompt, steps: 4 }),
+    signal: AbortSignal.timeout(120000)
+  });
+
+  const raw = await response.text();
+  let data = {};
+  try { data = JSON.parse(raw); } catch {}
+  if (!response.ok || data.success === false) {
+    const detail = (data.errors || []).map(item => item.message).join("; ") || raw.slice(0, 400);
+    throw new Error("Cloudflare Workers AI HTTP " + response.status + ": " + detail);
+  }
+
+  const imageData = data.result?.image || data.image;
+  if (!imageData || typeof imageData !== "string") {
+    throw new Error("Cloudflare Workers AI returned no image data");
+  }
+  return { buffer: Buffer.from(imageData, "base64"), mime: "image/jpeg" };
+}
+
 function extractImagePrompt(question) {
   let prompt = String(question || "").trim();
   if (prompt.toLowerCase().startsWith("/image")) {
@@ -711,7 +744,13 @@ async function handleImageGeneration(chatId, userId, question) {
   }
   await sendTelegram(chatId, "Придумываю и создаю изображение ✨ Это может занять до пары минут.");
   try {
-    const generated = await generateImageWithGemini(prompt);
+    let generated;
+    try {
+      generated = await generateImageWithGemini(prompt);
+    } catch (geminiError) {
+      console.warn("Gemini image generation failed; trying Cloudflare Workers AI:", geminiError.message);
+      generated = await generateImageWithCloudflare(prompt);
+    }
     await sendTelegramPhoto(chatId, generated, "Готово! ✨ Хочешь что-нибудь изменить?");
     try {
       await saveMessage(userId, "user", "[Генерация изображения] " + prompt);
