@@ -137,102 +137,70 @@ async function saveMessage(userId, role, content) {
   });
 }
 
-async function extractMemories(token, question, oldMemories, recentHistory = []) {
-  const response = await fetch(
-    "https://api.giga.chat/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        temperature: 0.1,
-        messages: [
-          {
-            role: "system",
-            content: `Ты — модуль долговременной памяти Mandora. Твоя задача — извлекать только полезные, устойчивые сведения о пользователе.
-
-СОХРАНЯЙ:
-- явно названное имя, предпочитаемое обращение и язык;
-- устойчивые интересы, хобби, цели, проекты и долгосрочные планы;
-- явно выраженные предпочтения и запреты в общении;
-- важные постоянные обстоятельства, только если пользователь сам прямо сообщил о них и они действительно нужны для будущей помощи.
-
-ПРАВИЛА:
-- Анализируй последнее сообщение вместе с недавним контекстом, чтобы понимать местоимения и продолжение темы.
-- Сохраняй только сведения, прямо подтверждённые словами пользователя. Не превращай предположения, шутки, гипотезы и вопросы в факты.
-- Не сохраняй разовые намерения, временные планы, случайные запросы и сведения, которые быстро устаревают.
-- Не дублируй существующую память. Если пользователь явно исправил ранее сохранённый факт, верни обновлённую формулировку вместо старой.
-- Формулируй каждый факт кратко, понятно и без домыслов. Один факт — одна строка.
-- Не сохраняй пароли, токены, ключи, платёжные реквизиты, медицинские сведения, финансовые сведения и другие чувствительные персональные данные.
-- Не сохраняй содержание переписки третьих лиц, если это не устойчивый контекст проекта и пользователь явно не просит его запомнить.
-- Если нет нового устойчивого факта или явного исправления — верни [].
-
-ФОРМАТ:
-Верни только корректный JSON-массив строк без Markdown. Максимум 3 факта, каждый не длиннее 200 символов.`
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              existing_memories: oldMemories,
-              recent_conversation: recentHistory.slice(-8),
-              latest_user_message: question
-            })
-          }
-        ]
-      }),
-      signal: AbortSignal.timeout(30000)
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error("Memory extraction error: " + response.status + ": " + await response.text());
-  }
-
+async function extractMemories(token, question, storedMemories, recentHistory = []) {
+  const response = await fetch("https://api.giga.chat/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: MODEL,
+      temperature: 0.1,
+      messages: [
+        {
+          role: "system",
+          content: "Ты — модуль актуализации памяти Mandora. Сравни последнее сообщение и контекст с уже сохранёнными воспоминаниями.\n" +
+            "Верни JSON-объект {\"add\":[\"новый факт\"],\"replace\":[{\"old\":\"точная старая строка из списка\",\"new\":\"новая формулировка\"}]}.\n" +
+            "Добавляй только новые устойчивые факты. Заменяй старый факт ТОЛЬКО если пользователь явно исправил его, сообщил, что он неверен, устарел или изменился. Обычное дополнение не является противоречием.\n" +
+            "В replace.old копируй строку дословно из stored_memories, включая префикс «Факт: » или «Стиль: ». Не угадывай и не удаляй по неоднозначной фразе.\n" +
+            "Не сохраняй пароли, токены, ключи, платёжные реквизиты, медицинские, финансовые и другие чувствительные персональные данные. Не сохраняй разовые намерения.\n" +
+            "Максимум 3 элемента в каждом массиве, новая формулировка до 200 символов. Если изменений нет, верни пустые массивы. Только корректный JSON, без Markdown."
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            stored_memories: storedMemories,
+            recent_conversation: recentHistory.slice(-8),
+            latest_user_message: question
+          })
+        }
+      ]
+    }),
+    signal: AbortSignal.timeout(30000)
+  });
+  if (!response.ok) throw new Error("Memory extraction error: " + response.status + ": " + await response.text());
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || "";
-
   try {
-    const cleaned = content
-      .replace(/\`\`\`json/gi, "")
-      .replace(/\`\`\`/g, "")
-      .trim();
-    const start = cleaned.indexOf("[");
-    const end = cleaned.lastIndexOf("]");
-    if (start < 0 || end < start) return [];
-
-    const facts = JSON.parse(cleaned.slice(start, end + 1));
-    if (!Array.isArray(facts)) return [];
-
-    const normalize = value => String(value)
-      .toLocaleLowerCase("ru-RU")
-      .replace(/[ё]/g, "е")
-      .replace(/[^\p{L}\p{N}]+/gu, " ")
-      .trim();
-
-    const existing = new Set(oldMemories.map(normalize));
-    const seen = new Set();
-
-    return facts
-      .filter(f => typeof f === "string")
-      .map(f => f.replace(/\s+/g, " ").trim())
-      .filter(f => f.length > 2 && f.length <= 200)
-      .filter(f => !/[\u0000-\u001f]/.test(f))
-      .filter(f => {
-        const key = normalize(f);
-        if (!key || existing.has(key) || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .slice(0, 3);
+    const cleaned = content.replace(/\`\`\`json/gi, "").replace(/\`\`\`/g, "").trim();
+    const first = cleaned.indexOf("{"), last = cleaned.lastIndexOf("}");
+    if (first < 0 || last < first) return { add: [], replace: [] };
+    const parsed = JSON.parse(cleaned.slice(first, last + 1));
+    const normalize = value => String(value).toLocaleLowerCase("ru-RU")
+      .replace(/[ё]/g, "е").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const existing = new Set(storedMemories.map(normalize));
+    const replacements = [], seenOld = new Set();
+    for (const item of Array.isArray(parsed.replace) ? parsed.replace : []) {
+      if (!item || typeof item.old !== "string" || typeof item.new !== "string") continue;
+      const old = item.old.trim(), next = item.new.replace(/\s+/g, " ").trim();
+      if (!storedMemories.includes(old) || next.length < 3 || next.length > 200) continue;
+      if (seenOld.has(old) || /[\u0000-\u001f]/.test(next)) continue;
+      seenOld.add(old);
+      replacements.push({ old, new: next });
+    }
+    const additions = [], seen = new Set();
+    for (const fact of Array.isArray(parsed.add) ? parsed.add : []) {
+      if (typeof fact !== "string") continue;
+      const value = fact.replace(/\s+/g, " ").trim(), key = normalize(value);
+      if (value.length < 3 || value.length > 200 || /[\u0000-\u001f]/.test(value)) continue;
+      if (!key || existing.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      additions.push(value);
+    }
+    return { add: additions.slice(0, 3), replace: replacements.slice(0, 3) };
   } catch (error) {
-    console.error("Could not parse memory facts:", error.message);
-    return [];
+    console.error("Could not parse memory updates:", error.message);
+    return { add: [], replace: [] };
   }
 }
-
 // Реальный поиск товаров Wildberries через публичный поисковый endpoint
 function isMarketplaceSearch(question) {
   return /(найди|поищи|подбери|ищи|посоветуй|закажи).*(вб|wb|wildberries|ozon|озон|яндекс маркет|мегамаркет|aliexpress|алиэкспресс|товар|шампунь|телефон|наушник|крем|одежд)|(вб|wb|wildberries|ozon|озон|яндекс маркет|мегамаркет|aliexpress|алиэкспресс).*(найди|поищи|подбери|товар)/i.test(question);
@@ -1134,8 +1102,16 @@ async function askGigaChat(userId, question) {
 
   if (token) {
     try {
-      const newFacts = await extractMemories(token, question, memories, history);
-      for (const fact of newFacts) await saveMemory(userId, fact);
+      const storedMemories = await listMemories(userId);
+      const updates = await extractMemories(token, question, storedMemories, history);
+      for (const item of updates.replace) {
+        await deleteMemory(userId, item.old);
+        await saveMemory(userId, item.new);
+      }
+      for (const fact of updates.add) await saveMemory(userId, fact);
+      if (updates.replace.length || updates.add.length) {
+        console.log("Mandora memory updated:", { added: updates.add.length, replaced: updates.replace.length });
+      }
     } catch (error) {
       console.error("Memory update error:", error.message);
     }
