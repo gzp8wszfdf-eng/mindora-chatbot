@@ -800,7 +800,7 @@ async function editImageWithCloudflare(photo, instruction) {
     throw new Error("Cloudflare Workers AI credentials are not configured");
   }
 
-  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/black-forest-labs/flux-1-kontext-pro`;
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run`;
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -808,9 +808,12 @@ async function editImageWithCloudflare(photo, instruction) {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      prompt: "Edit the supplied photo according to this instruction. Preserve the person's identity, face, pose and all unrelated details as closely as possible. Instruction: " + instruction,
-      input_image: photo.buffer.toString("base64"),
-      output_format: "jpeg"
+      model: "black-forest-labs/flux-1-kontext-pro",
+      input: {
+        prompt: "Edit the supplied photo according to this instruction. Preserve the person's identity, face, pose and all unrelated details as closely as possible. Instruction: " + instruction,
+        input_image: photo.buffer.toString("base64"),
+        output_format: "jpeg"
+      }
     }),
     signal: AbortSignal.timeout(120000)
   });
