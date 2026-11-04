@@ -831,7 +831,7 @@ async function editImageWithCloudflare(photo, instruction) {
     throw new Error("Cloudflare FLUX Kontext returned no image");
   }
 
-  if (/^https?:\\/\\//i.test(imageValue)) {
+  if (imageValue.startsWith("https://") || imageValue.startsWith("http://")) {
     const imageResponse = await fetch(imageValue, { signal: AbortSignal.timeout(60000) });
     if (!imageResponse.ok) throw new Error("Could not download edited Cloudflare image: HTTP " + imageResponse.status);
     const buffer = Buffer.from(await imageResponse.arrayBuffer());
