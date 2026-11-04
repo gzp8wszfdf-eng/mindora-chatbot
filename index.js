@@ -793,18 +793,74 @@ async function sendTelegramPhoto(chatId, photo, caption) {
   if (!response.ok) throw new Error('Telegram sendPhoto error: ' + await response.text());
 }
 
+async function editImageWithCloudflare(photo, instruction) {
+  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+  if (!accountId || !apiToken) {
+    throw new Error("Cloudflare Workers AI credentials are not configured");
+  }
+
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/black-forest-labs/flux-1-kontext-pro`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      prompt: "Edit the supplied photo according to this instruction. Preserve the person's identity, face, pose and all unrelated details as closely as possible. Instruction: " + instruction,
+      input_image: photo.buffer.toString("base64"),
+      output_format: "jpeg"
+    }),
+    signal: AbortSignal.timeout(120000)
+  });
+
+  const raw = await response.text();
+  let data = {};
+  try { data = JSON.parse(raw); } catch {}
+  if (!response.ok || data.success === false) {
+    const detail = (data.errors || []).map(item => item.message).join("; ") || raw.slice(0, 500);
+    throw new Error("Cloudflare FLUX Kontext HTTP " + response.status + ": " + detail);
+  }
+
+  const imageValue = data.result?.image || data.image;
+  if (!imageValue || typeof imageValue !== "string") {
+    throw new Error("Cloudflare FLUX Kontext returned no image");
+  }
+
+  if (/^https?:\\/\\//i.test(imageValue)) {
+    const imageResponse = await fetch(imageValue, { signal: AbortSignal.timeout(60000) });
+    if (!imageResponse.ok) throw new Error("Could not download edited Cloudflare image: HTTP " + imageResponse.status);
+    const buffer = Buffer.from(await imageResponse.arrayBuffer());
+    if (!buffer.length || buffer.length > 15 * 1024 * 1024) throw new Error("Edited image is empty or too large");
+    return { buffer, mime: imageResponse.headers.get("content-type")?.split(";")[0] || "image/jpeg" };
+  }
+
+  const base64 = imageValue.replace(/^data:image\\/[^;]+;base64,/i, "");
+  const buffer = Buffer.from(base64, "base64");
+  if (!buffer.length || buffer.length > 15 * 1024 * 1024) throw new Error("Cloudflare returned invalid or oversized image data");
+  return { buffer, mime: "image/jpeg" };
+}
+
 async function handleImageEdit(chatId, userId, photo, instruction) {
-  const cleanInstruction = instruction.replace(/^\/edit\s*/i, '').trim();
+  const cleanInstruction = instruction.replace(/^\\/edit\\s*/i, '').trim();
   if (!cleanInstruction) { await sendTelegram(chatId, 'Напиши, что изменить на фото. Например: «убери фон» или «сделай волосы темнее» ❤️'); return; }
   await sendTelegram(chatId, 'Приняла! Редактирую фото ✨ Это может занять до пары минут.');
+  let edited;
   try {
-    const edited = await editImageWithGemini(photo, cleanInstruction);
+    try {
+      edited = await editImageWithGemini(photo, cleanInstruction);
+      console.log("Photo edited with Gemini");
+    } catch (geminiError) {
+      console.warn("Gemini photo editing failed; trying Cloudflare FLUX Kontext:", geminiError.message);
+      edited = await editImageWithCloudflare(photo, cleanInstruction);
+      console.log("Photo edited with Cloudflare FLUX Kontext fallback");
+    }
     await sendTelegramPhoto(chatId, edited, 'Готово ❤️ Если хочешь, можем внести ещё изменения.');
     try { await saveMessage(userId, 'user', '[Редактирование фото] ' + cleanInstruction); await saveMessage(userId, 'assistant', '[Отправлено отредактированное фото]'); } catch (e) { console.error('Edit history save error:', e.message); }
   } catch (error) {
     console.error('Image editing failed:', error.message);
-    if (error.code === 'GEMINI_LIMIT') await sendTelegram(chatId, 'Сейчас достигнут лимит запросов Gemini или сервис временно ограничил обработку. Попробуй позже. Условия и возможная стоимость зависят от тарифа твоего Google API-аккаунта ❤️');
-    else await sendTelegram(chatId, 'Не получилось отредактировать фото 😔 Сервис мог быть временно недоступен. Попробуй ещё раз чуть позже.');
+    await sendTelegram(chatId, 'Не получилось отредактировать фото 😔 Gemini временно недоступен, а резервный редактор тоже не ответил. Попробуй ещё раз чуть позже ❤️');
   }
 }
 
