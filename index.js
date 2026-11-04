@@ -839,7 +839,8 @@ async function editImageWithCloudflare(photo, instruction) {
     return { buffer, mime: imageResponse.headers.get("content-type")?.split(";")[0] || "image/jpeg" };
   }
 
-  const base64 = imageValue.replace(/^data:image\\/[^;]+;base64,/i, "");
+  const commaIndex = imageValue.startsWith("data:") ? imageValue.indexOf(",") : -1;
+  const base64 = commaIndex >= 0 ? imageValue.slice(commaIndex + 1) : imageValue;
   const buffer = Buffer.from(base64, "base64");
   if (!buffer.length || buffer.length > 15 * 1024 * 1024) throw new Error("Cloudflare returned invalid or oversized image data");
   return { buffer, mime: "image/jpeg" };
