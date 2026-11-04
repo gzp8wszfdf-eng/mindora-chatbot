@@ -847,7 +847,8 @@ async function editImageWithCloudflare(photo, instruction) {
 }
 
 async function handleImageEdit(chatId, userId, photo, instruction) {
-  const cleanInstruction = instruction.replace(/^\\/edit\\s*/i, '').trim();
+  const rawInstruction = String(instruction || '').trim();
+  const cleanInstruction = rawInstruction.toLowerCase().startsWith('/edit') ? rawInstruction.slice(5).trim() : rawInstruction;
   if (!cleanInstruction) { await sendTelegram(chatId, 'Напиши, что изменить на фото. Например: «убери фон» или «сделай волосы темнее» ❤️'); return; }
   await sendTelegram(chatId, 'Приняла! Редактирую фото ✨ Это может занять до пары минут.');
   let edited;
