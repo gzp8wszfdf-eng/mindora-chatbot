@@ -468,6 +468,15 @@ async function describeTelegramPhoto(fileId) {
 }
 
 
+function isImageEditInstruction(question) {
+  return /^(?:\/edit\b|измени|отредактируй|редактируй|убери|удали|замени|поменяй|измени|добавь|улучши|улучшить|сделай|сделай мне|преврати|перенеси|переодень|одень|измени фон|замени фон|убери фон|сделай фон)/i.test(String(question || "").trim());
+}
+
+function isPhotoProductSearchInstruction(question) {
+  return isMarketplaceSearch(question) ||
+    /^(?:найди|определи|распознай|поищи)\s+(?:мне\s+)?(?:товар|продукт)|что\s+за\s+товар|найди\s+товар\s+на\s+фото/i.test(String(question || "").trim());
+}
+
 const pendingEditPhotos = new Map();
 const pendingMemoryDeletions = new Map();
 
@@ -1853,6 +1862,18 @@ if (pendingMemoryDeletions.has(String(userId)) && /^(да|давай|подтв�
             chatId,
             "Очистку истории добавим отдельно ❤️"
           );
+        } else if (pendingEditPhotos.has(String(userId)) &&
+          !message.photo && !message.video && !message.voice && !message.audio &&
+          !/^\/(?:image|memory|remember|forget|start|reset)\b/i.test(question) &&
+          isImageEditInstruction(question)) {
+          const pending = pendingEditPhotos.get(String(userId));
+          if (!pending || Date.now() - pending.createdAt > 10 * 60 * 1000) {
+            pendingEditPhotos.delete(String(userId));
+            await sendTelegram(chatId, 'Время хранения фото истекло. Отправь его ещё раз, а затем напиши, что изменить ❤️');
+          } else {
+            pendingEditPhotos.delete(String(userId));
+            await handleImageEdit(chatId, userId, pending.photo, question);
+          }
         } else if (isImageGenerationRequest(question)) {
           await handleImageGeneration(chatId, userId, question);
         } else if (message.video) {
@@ -1866,17 +1887,30 @@ if (pendingMemoryDeletions.has(String(userId)) && /^(да|давай|подтв�
           await answerVoiceMessage(chatId, userId, (message.voice || message.audio).file_id);
         } else if (message.photo?.length) {
           const photoMeta = message.photo[message.photo.length - 1];
-          const editIntent = /^(\/edit\b|измени|отредактируй|убери фон|замени фон|поменяй фон|улучши фото|измени одежду|измени прич[её]ску)/i.test(question);
+          const editIntent = isImageEditInstruction(question);
+          const productIntent = isPhotoProductSearchInstruction(question);
           if (editIntent) {
             const photo = await downloadTelegramPhoto(photoMeta.file_id);
             await handleImageEdit(chatId, userId, photo, question);
             return;
           }
-          await sendTelegram(chatId, 'Фото получила ❤️ Сейчас попробую распознать товар. Чтобы отредактировать его, отправь следом команду /edit и напиши, что изменить.');
-          const photo = photoMeta;
           let cachedPhoto = null;
-          try { cachedPhoto = await downloadTelegramPhoto(photo.file_id); pendingEditPhotos.set(String(userId), { photo: cachedPhoto, createdAt: Date.now() }); }
-          catch (downloadError) { console.warn('Could not cache photo for editing:', downloadError.message); }
+          try {
+            cachedPhoto = await downloadTelegramPhoto(photoMeta.file_id);
+            pendingEditPhotos.set(String(userId), {
+              photo: cachedPhoto,
+              fileId: photoMeta.file_id,
+              createdAt: Date.now()
+            });
+          } catch (downloadError) {
+            console.warn('Could not cache photo for editing:', downloadError.message);
+          }
+          if (!productIntent) {
+            await sendTelegram(chatId, 'Фото получила ❤️ Напиши следующим сообщением, что изменить: например, «убери фон», «перенеси меня в Париж» или «сделай освещение как в студии». Я отредактирую именно это фото.\n\nЕсли хочешь найти товар на снимке, напиши «найди товар на фото».');
+            return;
+          }
+          await sendTelegram(chatId, 'Фото получила ❤️ Распознаю товар и ищу его на маркетплейсах…');
+          const photo = photoMeta;
           let description;
           try {
             description = await describeTelegramPhoto(photo.file_id);
