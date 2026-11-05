@@ -1813,10 +1813,30 @@ const server = http.createServer((req, res) => {
       try {
         const data = JSON.parse(body || "{}");
         const question = String(data.message || "").trim().slice(0, 1600);
-        const userId = String(data.userId || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
-        if (!question || !userId) {
-          res.writeHead(400, headers);
-          res.end(JSON.stringify({ error: "Войди в аккаунт и напиши вопрос ❤️" }));
+        const claimedUserId = String(data.userId || "");
+        const accessToken = String(data.accessToken || "");
+        if (!question || !claimedUserId || !accessToken || accessToken.length > 4096) {
+          res.writeHead(401, headers);
+          res.end(JSON.stringify({ error: "Войди в аккаунт, чтобы написать Мандоре ❤️" }));
+          return;
+        }
+        const authResponse = await fetch(process.env.SUPABASE_URL + "/auth/v1/user", {
+          method: "GET",
+          headers: {
+            apikey: process.env.SUPABASE_KEY,
+            Authorization: "Bearer " + accessToken
+          }
+        });
+        if (!authResponse.ok) {
+          res.writeHead(401, headers);
+          res.end(JSON.stringify({ error: "Сессия недействительна. Войди в аккаунт заново ❤️" }));
+          return;
+        }
+        const authenticatedUser = await authResponse.json();
+        const userId = String(authenticatedUser.id || "");
+        if (!userId || userId !== claimedUserId) {
+          res.writeHead(403, headers);
+          res.end(JSON.stringify({ error: "Не удалось подтвердить аккаунт." }));
           return;
         }
         const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").split(",")[0].trim();
