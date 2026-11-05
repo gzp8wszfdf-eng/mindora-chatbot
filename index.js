@@ -1704,6 +1704,7 @@ async function handleSuperpowerGame(chatId, userId, question) {
 }
 
 const gameChatRate = new Map();
+const watchChatRate = new Map();
 
 const server = http.createServer((req, res) => {
   const gameOrigin = "https://gzp8wszfdf-eng.github.io";
@@ -1767,6 +1768,75 @@ const server = http.createServer((req, res) => {
         console.error("Game chat error:", error.message);
         res.writeHead(500, headers);
         res.end(JSON.stringify({ error: "Mandora пока не может ответить. Попробуй ещё раз ❤️" }));
+      }
+    });
+    return;
+  }
+
+  const watchOrigin = "https://lawatch.netlify.app";
+  if (req.url === "/watch/chat" && req.method === "OPTIONS") {
+    const origin = req.headers.origin || "";
+    if (origin !== watchOrigin) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": watchOrigin,
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Vary": "Origin"
+    });
+    res.end();
+    return;
+  }
+
+  if (req.url === "/watch/chat" && req.method === "POST") {
+    const origin = req.headers.origin || "";
+    if (origin !== watchOrigin) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Origin not allowed" }));
+      return;
+    }
+    const headers = {
+      "Content-Type": "application/json; charset=utf-8",
+      "Access-Control-Allow-Origin": watchOrigin,
+      "Vary": "Origin",
+      "Cache-Control": "no-store"
+    };
+    let body = "";
+    req.on("data", chunk => {
+      body += chunk;
+      if (body.length > 12000) req.destroy();
+    });
+    req.on("end", async () => {
+      try {
+        const data = JSON.parse(body || "{}");
+        const question = String(data.message || "").trim().slice(0, 1600);
+        const userId = String(data.userId || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
+        if (!question || !userId) {
+          res.writeHead(400, headers);
+          res.end(JSON.stringify({ error: "Войди в аккаунт и напиши вопрос ❤️" }));
+          return;
+        }
+        const ip = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").split(",")[0].trim();
+        const now = Date.now();
+        const recent = (watchChatRate.get(ip) || []).filter(t => now - t < 60000);
+        if (recent.length >= 10) {
+          res.writeHead(429, headers);
+          res.end(JSON.stringify({ error: "Слишком много сообщений. Подожди минутку ❤️" }));
+          return;
+        }
+        recent.push(now);
+        watchChatRate.set(ip, recent);
+        const prompt = "Ты — Мандора, встроенная помощница сервиса L&A Watch — сайта, где друзья вместе смотрят видео в комнатах. Твоя задача — просто и коротко помогать пользоваться сайтом. Объясняй, где искать кнопки и как создать комнату, войти по коду, пригласить друзей, пользоваться чатом, микрофоном, звуком и очередью видео. Если функция не работает, предложи безопасные понятные шаги проверки, не утверждая, что сама можешь нажимать кнопки или менять настройки пользователя. Не выдумывай функции, которых может не быть; если не уверена, честно скажи об этом. Отвечай по-русски, дружелюбно, без длинных инструкций. Это вопрос пользователя сайта L&A Watch: " + question;
+        const answer = await askGigaChat("lawatch-" + userId, prompt);
+        res.writeHead(200, headers);
+        res.end(JSON.stringify({ answer }));
+      } catch (error) {
+        console.error("L&A Watch chat error:", error.message);
+        res.writeHead(500, headers);
+        res.end(JSON.stringify({ error: "Мандора пока не может ответить. Попробуй ещё раз ❤️" }));
       }
     });
     return;
