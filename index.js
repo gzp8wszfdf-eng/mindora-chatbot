@@ -1238,6 +1238,43 @@ async function callGroqMandora(messages, model) {
   return answer.trim();
 }
 
+async function callOpenAI(messages) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY is not configured");
+  }
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + process.env.OPENAI_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || "gpt-6-astra",
+      input: messages
+    }),
+    signal: AbortSignal.timeout(60000)
+  });
+
+  const raw = await response.text();
+  let data = {};
+  try { data = JSON.parse(raw); } catch {}
+  if (!response.ok) {
+    throw new Error("OpenAI API HTTP " + response.status + ": " + raw.slice(0, 700));
+  }
+
+  const answer = (data.output || [])
+    .filter(item => item.type === "message")
+    .flatMap(item => item.content || [])
+    .filter(item => item.type === "output_text")
+    .map(item => item.text || "")
+    .join("\n")
+    .trim();
+
+  if (!answer) throw new Error("OpenAI returned an empty answer");
+  return answer;
+}
+
 async function askGigaChat(userId, question) {
   let memories = [];
   let history = [];
@@ -1288,41 +1325,61 @@ async function askGigaChat(userId, question) {
   let token = null;
   const smartModel = chooseMandoraModel(question);
 
-  if (smartModel && process.env.GROQ_API_KEY) {
+  // Primary provider: OpenAI.
+  try {
+    answer = await callOpenAI(messages);
+    console.log("Mandora used OpenAI primary");
+  } catch (error) {
+    console.warn("OpenAI unavailable; switching to GigaChat:", error.message);
+  }
+
+  // Backup provider: GigaChat.
+  if (!answer && process.env.GIGACHAT_AUTH_KEY) {
+    try {
+      token = await getGigaToken();
+      const response = await fetch(
+        "https://api.giga.chat/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + token,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: MODEL,
+            messages,
+            temperature: 0.82
+          }),
+          signal: AbortSignal.timeout(60000)
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("GigaChat error " + response.status + ": " + await response.text());
+      }
+
+      const data = await response.json();
+      answer = data.choices?.[0]?.message?.content || "";
+      if (!answer.trim()) throw new Error("GigaChat returned an empty answer");
+      console.log("Mandora used GigaChat backup");
+    } catch (error) {
+      console.warn("GigaChat backup unavailable:", error.message);
+      token = null;
+    }
+  }
+
+  // Last-resort provider for accounts that already have Groq configured.
+  if (!answer && smartModel && process.env.GROQ_API_KEY) {
     try {
       answer = await callGroqMandora(messages, smartModel);
-      console.log("Mandora used smart model:", smartModel);
+      console.log("Mandora used Groq emergency fallback:", smartModel);
     } catch (error) {
-      console.warn("Smart model unavailable; falling back to GigaChat:", error.message);
+      console.warn("Groq emergency fallback unavailable:", error.message);
     }
   }
 
   if (!answer) {
-    token = await getGigaToken();
-    const response = await fetch(
-      "https://api.giga.chat/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + token,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          messages,
-          temperature: 0.82
-        }),
-        signal: AbortSignal.timeout(60000)
-      }
-    );
-
-    if (!response.ok) {
-      throw new Error("GigaChat error " + response.status + ": " + await response.text());
-    }
-
-    const data = await response.json();
-    answer = data.choices?.[0]?.message?.content;
-    if (!answer) throw new Error("GigaChat returned an empty answer");
+    throw new Error("All configured AI providers are unavailable");
   }
 
   try {
